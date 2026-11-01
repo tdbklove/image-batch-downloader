@@ -1,4 +1,4 @@
-# 頁面圖片批次下載
+# ImageBatchDownloader（頁面圖片批次下載）
 
 Chrome Manifest V3 擴充功能：掃描目前分頁的圖片，以縮圖格狀清單勾選後批次下載。
 
