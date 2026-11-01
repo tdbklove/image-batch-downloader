@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>頁面圖片批次下載</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>頁面圖片</h1>
+      <span id="source" class="muted"></span>
+    </div>
+    <span id="count" class="muted">尚未掃描</span>
+  </header>
+
+  <div class="toolbar">
+    <button id="scan" class="primary">掃描目前頁面</button>
+    <button id="selectAll" disabled>全選</button>
+    <button id="selectNone" disabled>全不選</button>
+    <span class="muted hint">按住 Shift 點選可一次選取範圍</span>
+  </div>
+
+  <p id="status" role="status">按「掃描目前頁面」列出可下載圖片。</p>
+  <main id="images" aria-live="polite"></main>
+
+  <footer>
+    <button id="settings" class="location" title="變更存放位置">
+      <span aria-hidden="true">📁</span>
+      <span id="folder">存放位置</span>
+    </button>
+    <button id="download" class="primary" disabled>下載勾選項目</button>
+  </footer>
+  <script src="shared.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

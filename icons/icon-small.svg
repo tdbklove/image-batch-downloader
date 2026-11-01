@@ -1,0 +1,14 @@
+<!-- 16／32 px 用的簡化版：拿掉後方卡片與太陽，線條加粗 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3d8bff"/>
+      <stop offset="1" stop-color="#1350c0"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="32" height="32" rx="7" fill="url(#tile)"/>
+  <rect x="4" y="7" width="19" height="15" rx="2.5" fill="#fff"/>
+  <path d="M6 20 L11.5 13.5 L15 17.5 L17 15.5 L21 20 Z" fill="#1769e0"/>
+  <circle cx="23" cy="23" r="8" fill="#ffb020" stroke="#fff" stroke-width="2"/>
+  <path d="M23 18.5 V26.5 M19.5 23.5 L23 27 L26.5 23.5" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

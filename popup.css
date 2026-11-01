@@ -1,0 +1,77 @@
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  width: 560px;
+  font: 13px system-ui, "Microsoft JhengHei", sans-serif;
+  color: #202124;
+  background: #fff;
+}
+
+header, .toolbar, footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+}
+
+header { justify-content: space-between; border-bottom: 1px solid #eee; }
+h1 { font-size: 16px; margin: 0 8px 0 0; display: inline; }
+.muted { color: #666; font-size: 12px; }
+
+.toolbar { padding-bottom: 4px; flex-wrap: wrap; }
+.hint { margin-left: auto; }
+
+button {
+  border: 1px solid #dadce0;
+  border-radius: 6px;
+  background: #fff;
+  padding: 7px 10px;
+  cursor: pointer;
+  font: inherit;
+}
+button:hover:not(:disabled) { background: #f4f6f8; }
+button:disabled { opacity: .45; cursor: default; }
+.primary { background: #1769e0; color: #fff; border-color: #1769e0; }
+.primary:hover:not(:disabled) { background: #0f57c0; }
+
+#status { margin: 4px 14px 8px; color: #555; font-size: 12px; min-height: 16px; }
+
+main {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  max-height: 400px;
+  overflow: auto;
+  padding: 0 14px 10px;
+}
+
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border: 2px solid #e3e3e3;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+  background: #f4f4f4;
+}
+.card:has(input:checked) { border-color: #1769e0; background: #eaf1fd; }
+.card input { position: absolute; top: 6px; left: 6px; width: 16px; height: 16px; margin: 0; }
+.card img { width: 100%; height: 110px; object-fit: contain; background: #f4f4f4; }
+.dims, .name { padding: 0 6px; font-size: 11px; color: #555; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dims { padding-top: 4px; }
+.name { padding-bottom: 5px; color: #777; }
+
+footer { border-top: 1px solid #eee; justify-content: space-between; }
+.location {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  border-color: transparent;
+  color: #555;
+  font-size: 12px;
+}
+#folder { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+#download { flex-shrink: 0; }

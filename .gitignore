@@ -1,0 +1,11 @@
+# 打包產物（.pem 是擴充功能的私鑰，絕對不要上傳）
+*.crx
+*.pem
+*.zip
+
+# 系統與編輯器
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

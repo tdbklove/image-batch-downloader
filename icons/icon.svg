@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3d8bff"/>
+      <stop offset="1" stop-color="#1350c0"/>
+    </linearGradient>
+    <clipPath id="photo">
+      <rect x="27" y="45" width="56" height="40" rx="4"/>
+    </clipPath>
+  </defs>
+
+  <!-- 底板 -->
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#tile)"/>
+
+  <!-- 後方的圖片卡（表示「多張」） -->
+  <rect x="34" y="22" width="68" height="54" rx="9" fill="#fff" opacity=".42" transform="rotate(8 68 49)"/>
+
+  <!-- 前方的圖片卡 -->
+  <rect x="20" y="38" width="70" height="54" rx="10" fill="#fff"/>
+  <g clip-path="url(#photo)">
+    <rect x="27" y="45" width="56" height="40" fill="#d9e6ff"/>
+    <circle cx="70" cy="56" r="6" fill="#ffb020"/>
+    <path d="M24 88 L45 62 L59 78 L67 69 L86 88 Z" fill="#1769e0"/>
+  </g>
+
+  <!-- 下載徽章 -->
+  <circle cx="93" cy="93" r="25" fill="#ffb020" stroke="#fff" stroke-width="6"/>
+  <path d="M93 80 V102 M83 93 L93 103 L103 93" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

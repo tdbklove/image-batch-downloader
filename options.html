@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>設定 - 頁面圖片批次下載</title>
+  <link rel="icon" href="icons/icon-32.png">
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <header>
+      <img src="icons/icon-48.png" alt="" width="40" height="40">
+      <div>
+        <h1>頁面圖片批次下載</h1>
+        <p class="muted">下載設定會自動儲存。</p>
+      </div>
+    </header>
+
+    <section>
+      <h2>存放位置</h2>
+
+      <label class="choice">
+        <input type="radio" name="mode" value="downloads">
+        <span>
+          <strong>瀏覽器的下載資料夾</strong>
+          <span class="muted">最穩定。按下下載後可以關閉 popup，下載會在背景繼續。</span>
+        </span>
+      </label>
+      <div class="detail" data-for="downloads">
+        <label for="subfolder">子資料夾（可留空）</label>
+        <input id="subfolder" type="text" placeholder="例如 Art 或 Art/插畫" spellcheck="false">
+        <p class="muted">要更換下載資料夾本身，請到 <button type="button" class="link" id="openChromeSettings">Chrome 設定 › 下載</button>。這會影響所有下載。</p>
+      </div>
+
+      <label class="choice">
+        <input type="radio" name="mode" value="custom">
+        <span>
+          <strong>自選資料夾</strong>
+          <span class="muted">可存到任何位置，例如 D:\圖片。重開瀏覽器後第一次下載需要再允許一次；下載完成前請保持 popup 開啟。</span>
+        </span>
+      </label>
+      <div class="detail" data-for="custom">
+        <div class="folder-row">
+          <span class="folder-icon" aria-hidden="true">📁</span>
+          <span id="folderName" class="folder-name">尚未選擇</span>
+          <span id="permission" class="badge"></span>
+        </div>
+        <div class="buttons">
+          <button type="button" id="pickFolder" class="primary">選擇資料夾…</button>
+          <button type="button" id="grant" hidden>允許寫入</button>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>資料夾結構</h2>
+      <label class="choice">
+        <input type="checkbox" id="organize">
+        <span>
+          <strong>依網站與作品自動分資料夾</strong>
+          <span class="muted">關閉時，所有圖片都直接放在存放位置裡。</span>
+        </span>
+      </label>
+      <p class="example">範例：<code id="example"></code></p>
+    </section>
+
+    <section>
+      <h2>掃描</h2>
+      <div class="field">
+        <label for="minSize"><strong>最小圖片尺寸</strong></label>
+        <span class="inline-input"><input id="minSize" type="number" min="0" step="50"> px</span>
+        <p class="muted">長或寬小於此值的圖片不會列出，用來濾掉頭像、圖示。尺寸未知的圖片仍會列出。</p>
+      </div>
+      <label class="choice">
+        <input type="checkbox" id="autoScroll">
+        <span>
+          <strong>自動捲動載入</strong>
+          <span class="muted">掃描一般網頁前，先把頁面捲到底，讓要捲動才會載入的圖片出現。Pixiv、Postype 不需要，也不受影響。</span>
+        </span>
+      </label>
+    </section>
+
+    <p id="toast" role="status" class="toast"></p>
+  </main>
+  <script src="shared.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>
