@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "頁面圖片批次下載",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "掃描目前頁面的圖片（支援 Pixiv 原圖、Postype 原圖），勾選後批次下載到指定位置。",
   "permissions": ["activeTab", "scripting", "downloads", "offscreen", "declarativeNetRequest", "storage"],
   "host_permissions": ["<all_urls>"],

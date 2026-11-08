@@ -1,4 +1,6 @@
 const modeInputs = [...document.querySelectorAll('input[name=mode]')];
+const onExistingInputs = [...document.querySelectorAll('input[name=onExisting]')];
+const openModeInputs = [...document.querySelectorAll('input[name=openMode]')];
 const subfolderInput = document.querySelector('#subfolder');
 const organizeInput = document.querySelector('#organize');
 const minSizeInput = document.querySelector('#minSize');
@@ -48,6 +50,8 @@ async function renderPermission() {
 
 function render() {
   modeInputs.forEach(input => { input.checked = input.value === settings.mode; });
+  onExistingInputs.forEach(input => { input.checked = input.value === settings.onExisting; });
+  openModeInputs.forEach(input => { input.checked = input.value === settings.openMode; });
   document.querySelectorAll('.detail').forEach(el => { el.hidden = el.dataset.for !== settings.mode; });
   if (document.activeElement !== subfolderInput) subfolderInput.value = settings.subfolder;
   organizeInput.checked = settings.organize;
@@ -61,6 +65,8 @@ function render() {
 }
 
 modeInputs.forEach(input => input.addEventListener('change', () => update({ mode: input.value })));
+onExistingInputs.forEach(input => input.addEventListener('change', () => update({ onExisting: input.value })));
+openModeInputs.forEach(input => input.addEventListener('change', () => update({ openMode: input.value })));
 organizeInput.addEventListener('change', () => update({ organize: organizeInput.checked }));
 autoScrollInput.addEventListener('change', () => update({ autoScroll: autoScrollInput.checked }));
 minSizeInput.addEventListener('change', () => {

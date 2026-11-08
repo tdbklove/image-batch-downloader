@@ -3,23 +3,31 @@
 <head>
   <meta charset="utf-8">
   <title>頁面圖片批次下載</title>
+  <link rel="icon" href="icons/icon-32.png">
   <link rel="stylesheet" href="popup.css">
 </head>
-<body>
+<!-- 同一個頁面兩種用法：插件彈窗，或帶 ?tab=<分頁ID> 開成下載分頁（body.page）。 -->
+<body class="popup">
   <header>
-    <div>
+    <div class="title">
       <h1>頁面圖片</h1>
       <span id="source" class="muted"></span>
+      <span id="target" class="muted target"></span>
     </div>
     <span id="count" class="muted">尚未掃描</span>
+    <button id="openTab" class="icon-button popup-only" title="在分頁中開啟（圖片多時比較好選）">⤢ 分頁</button>
   </header>
 
   <div class="toolbar">
     <button id="scan" class="primary">掃描目前頁面</button>
     <button id="selectAll" disabled>全選</button>
     <button id="selectNone" disabled>全不選</button>
-    <span class="muted hint">按住 Shift 點選可一次選取範圍</span>
+    <label class="slider" title="縮圖大小">
+      <span aria-hidden="true">🖼</span>
+      <input type="range" id="thumbSize" min="80" max="200" step="10" aria-label="縮圖大小">
+    </label>
   </div>
+  <p class="muted hint">Shift + 點選可選取範圍；滑到圖片上按空白鍵或點 🔍 看大圖</p>
 
   <p id="status" role="status">按「掃描目前頁面」列出可下載圖片。</p>
   <main id="images" aria-live="polite"></main>
@@ -31,6 +39,24 @@
     </button>
     <button id="download" class="primary" disabled>下載勾選項目</button>
   </footer>
+
+  <div id="lightbox" class="lightbox" hidden>
+    <div class="lightbox-bar">
+      <span id="lbIndex"></span>
+      <span id="lbName" class="lb-name"></span>
+      <button id="lbClose" class="icon-button" title="關閉（Esc）">✕</button>
+    </div>
+    <div class="lightbox-stage">
+      <button id="lbPrev" class="nav" title="上一張（←）">‹</button>
+      <img id="lbImage" alt="" referrerpolicy="no-referrer">
+      <button id="lbNext" class="nav" title="下一張（→）">›</button>
+    </div>
+    <div class="lightbox-bar">
+      <span id="lbDims" class="muted"></span>
+      <button id="lbToggle" class="primary" title="勾選／取消（空白鍵）"></button>
+    </div>
+  </div>
+
   <script src="shared.js"></script>
   <script src="popup.js"></script>
 </body>

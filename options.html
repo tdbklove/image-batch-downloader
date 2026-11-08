@@ -36,7 +36,7 @@
         <input type="radio" name="mode" value="custom">
         <span>
           <strong>自選資料夾</strong>
-          <span class="muted">可存到任何位置，例如 D:\圖片。重開瀏覽器後第一次下載需要再允許一次；下載完成前請保持 popup 開啟。</span>
+          <span class="muted">可存到任何位置，例如 D:\圖片。重開瀏覽器後第一次下載需要再允許一次；寫入完成前請保持彈窗或下載分頁開啟（圖片多時建議用分頁）。</span>
         </span>
       </label>
       <div class="detail" data-for="custom">
@@ -62,6 +62,50 @@
         </span>
       </label>
       <p class="example">範例：<code id="example"></code></p>
+    </section>
+
+    <section>
+      <h2>遇到已存在的檔案</h2>
+      <label class="choice">
+        <input type="radio" name="onExisting" value="skip">
+        <span>
+          <strong>跳過</strong>
+          <span class="muted">不重複下載。清單中已下載的圖片會標示「已下載」並預設不勾選。</span>
+        </span>
+      </label>
+      <label class="choice">
+        <input type="radio" name="onExisting" value="overwrite">
+        <span>
+          <strong>覆蓋舊檔</strong>
+          <span class="muted">用新下載的檔案取代舊檔。</span>
+        </span>
+      </label>
+      <label class="choice">
+        <input type="radio" name="onExisting" value="keep">
+        <span>
+          <strong>兩個都保留</strong>
+          <span class="muted">新檔案另存為「檔名 (1).png」。</span>
+        </span>
+      </label>
+      <p class="muted note">判斷方式：存在下載資料夾時，依 Chrome 的下載紀錄判斷，檔案被搬走或刪除就視為沒下載過；存在自選資料夾時，直接檢查資料夾裡有沒有同名檔案。</p>
+    </section>
+
+    <section>
+      <h2>開啟方式</h2>
+      <label class="choice">
+        <input type="radio" name="openMode" value="popup">
+        <span>
+          <strong>彈窗</strong>
+          <span class="muted">點插件圖示時在右上角跳出小視窗，適合圖片不多時快速下載。彈窗裡也可以按「⤢ 分頁」改開分頁。</span>
+        </span>
+      </label>
+      <label class="choice">
+        <input type="radio" name="openMode" value="tab">
+        <span>
+          <strong>下載分頁</strong>
+          <span class="muted">點插件圖示時直接開一個新分頁並自動掃描，畫面大、縮圖可以調大，適合一次幾十到上百張。</span>
+        </span>
+      </label>
     </section>
 
     <section>
