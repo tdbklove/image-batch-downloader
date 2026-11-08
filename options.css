@@ -31,6 +31,7 @@ section {
 .detail input[type=text] { width: 100%; padding: 7px 9px; border: 1px solid #cfd3d8; border-radius: 6px; font: inherit; }
 
 .folder-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.folder-icon { width: 18px; height: 18px; flex-shrink: 0; fill: none; stroke: #6b7280; stroke-width: 1.8; stroke-linejoin: round; }
 .folder-name { font-weight: 600; overflow-wrap: anywhere; }
 .badge { font-size: 11px; padding: 2px 8px; border-radius: 99px; }
 .badge.ok { background: #e3f4e8; color: #1e7b3a; }

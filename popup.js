@@ -3,6 +3,7 @@ const scanButton = $('#scan');
 const selectAllButton = $('#selectAll');
 const selectNoneButton = $('#selectNone');
 const downloadButton = $('#download');
+const stitchButton = $('#stitch');
 const thumbSizeInput = $('#thumbSize');
 const statusEl = $('#status');
 const imagesEl = $('#images');
@@ -23,7 +24,16 @@ let visible = []; // 目前列出的圖片 { image, index, card, check }
 let hoverPos = null; // 滑鼠所在的卡片（visible 的位置），空白鍵開大圖用
 let lastClickedPos = null;
 
-const checkedItems = () => visible.filter(item => item.check.checked);
+let selectionOrder = []; // 勾選的先後順序（visible 的位置），拼接時照這個順序
+
+// 所有勾選狀態的變更都經過這裡，才能記住勾選順序。
+function setChecked(pos, checked) {
+  visible[pos].check.checked = checked;
+  selectionOrder = selectionOrder.filter(p => p !== pos);
+  if (checked) selectionOrder.push(pos);
+}
+
+const checkedItems = () => selectionOrder.map(pos => visible[pos]);
 
 function isTooSmall(image) {
   const min = Number(settings.minSize) || 0;
@@ -31,10 +41,24 @@ function isTooSmall(image) {
   return image.width < min || image.height < min;
 }
 
+// 單色線條圖示（定義在 popup.html 的 <symbol>）。
+function icon(name) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('class', 'icon');
+  svg.setAttribute('aria-hidden', 'true');
+  const use = document.createElementNS(NS, 'use');
+  use.setAttribute('href', `#i-${name}`);
+  svg.append(use);
+  return svg;
+}
+
 function updateSelection() {
   const checked = checkedItems().length;
   downloadButton.disabled = checked === 0;
-  downloadButton.textContent = `下載勾選項目 (${checked})`;
+  $('#downloadLabel').textContent = checked ? `下載 ${checked} 張` : '下載';
+  stitchButton.disabled = checked < 2;
+  $('#stitchLabel').textContent = checked >= 2 ? `拼接 ${checked} 張` : '拼接';
 }
 
 // ---- 縮圖大小 ----
@@ -86,7 +110,8 @@ function render(existing = new Set()) {
     zoom.type = 'button';
     zoom.className = 'zoom';
     zoom.title = '看大圖（空白鍵）';
-    zoom.textContent = '🔍';
+    zoom.setAttribute('aria-label', '看大圖');
+    zoom.append(icon('zoom'));
     zoom.addEventListener('click', event => {
       event.preventDefault();
       openLightbox(pos);
@@ -122,7 +147,7 @@ function render(existing = new Set()) {
       card.classList.add('downloaded');
       const badge = document.createElement('span');
       badge.className = 'badge';
-      badge.textContent = '已下載';
+      badge.append(icon('check'), '已下載');
       card.append(badge);
     }
     card.addEventListener('mouseenter', () => { hoverPos = pos; });
@@ -131,6 +156,7 @@ function render(existing = new Set()) {
     return { image, index, card, check };
   });
 
+  selectionOrder = visible.flatMap((item, pos) => (item.check.checked ? [pos] : []));
   const enabled = visible.length > 0;
   selectAllButton.disabled = !enabled;
   selectNoneButton.disabled = !enabled;
@@ -138,21 +164,25 @@ function render(existing = new Set()) {
 }
 
 function onCheckClick(event, pos) {
+  const checked = event.currentTarget.checked; // 瀏覽器已經切換好了
   if (event.shiftKey && lastClickedPos != null) {
-    const [from, to] = [Math.min(lastClickedPos, pos), Math.max(lastClickedPos, pos)];
-    for (let i = from; i <= to; i++) visible[i].check.checked = event.currentTarget.checked;
+    const step = pos > lastClickedPos ? 1 : -1;
+    for (let i = lastClickedPos; i !== pos + step; i += step) setChecked(i, checked);
+  } else {
+    setChecked(pos, checked);
   }
   lastClickedPos = pos;
   updateSelection();
 }
 
 selectAllButton.addEventListener('click', () => {
-  visible.forEach(item => { item.check.checked = true; });
+  // 已勾選的保留原本順序，其餘依清單順序接在後面。
+  visible.forEach((item, pos) => { if (!item.check.checked) setChecked(pos, true); });
   updateSelection();
 });
 
 selectNoneButton.addEventListener('click', () => {
-  visible.forEach(item => { item.check.checked = false; });
+  visible.forEach((_, pos) => setChecked(pos, false));
   updateSelection();
 });
 
@@ -195,7 +225,7 @@ function showLightboxImage() {
 function renderLightboxToggle() {
   const checked = visible[lightboxPos].check.checked;
   const button = $('#lbToggle');
-  button.textContent = checked ? '✓ 已勾選' : '勾選這張';
+  button.replaceChildren(...(checked ? [icon('check'), '已勾選'] : ['勾選這張']));
   button.classList.toggle('primary', checked);
 }
 
@@ -205,8 +235,7 @@ function moveLightbox(step) {
 }
 
 function toggleLightboxCheck() {
-  const { check } = visible[lightboxPos];
-  check.checked = !check.checked;
+  setChecked(lightboxPos, !visible[lightboxPos].check.checked);
   renderLightboxToggle();
   updateSelection();
 }
@@ -219,7 +248,35 @@ lightbox.addEventListener('click', event => {
   if (event.target.classList.contains('lightbox-stage')) closeLightbox();
 });
 
+// ---- 操作說明 ----
+
+const helpButton = $('#helpButton');
+const helpPanel = $('#helpPanel');
+
+function setHelpOpen(open) {
+  helpPanel.hidden = !open;
+  helpButton.setAttribute('aria-expanded', String(open));
+  if (open) try { localStorage.setItem('helpSeen', '1'); } catch {}
+}
+helpButton.addEventListener('click', () => setHelpOpen(helpPanel.hidden));
+$('#helpClose').addEventListener('click', () => setHelpOpen(false));
+document.addEventListener('click', event => {
+  if (!helpPanel.hidden && !event.target.closest('.help-wrap')) setHelpOpen(false);
+});
+
+// 第一次掃描出圖片時自動打開一次，之後只在點 ? 時顯示。
+function showHelpFirstTime() {
+  let seen = true;
+  try { seen = localStorage.getItem('helpSeen') === '1'; } catch {}
+  if (!seen) setHelpOpen(true);
+}
+
 document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !helpPanel.hidden) {
+    setHelpOpen(false);
+    return;
+  }
+  if (!$('#stitchPanel').hidden) return; // 拼接面板有自己的按鍵處理（stitch.js）
   if (!lightbox.hidden) {
     const actions = {
       Escape: closeLightbox,
@@ -281,7 +338,8 @@ async function runScan() {
     scan = result;
     // 先替防盜鏈網域加上 Referer 規則，預覽縮圖才載得出來。
     await chrome.runtime.sendMessage({ type: 'ENSURE_REFERERS', images: scan.images });
-    sourceEl.textContent = `來源：${scan.source}`;
+    sourceEl.textContent = scan.source;
+    sourceEl.hidden = false;
     renderLocation();
     render(await findDownloaded().catch(() => new Set()));
     const tips = [scan.note];
@@ -289,11 +347,10 @@ async function runScan() {
       tips.push(settings.autoScroll
         ? '沒有找到可下載圖片。'
         : '沒有找到可下載圖片。如果圖片要捲動才會出現，可以在設定開啟「自動捲動載入」。');
-    } else {
-      tips.push('勾選圖片後開始下載。');
     }
     statusEl.textContent = tips.filter(Boolean).join(' ');
-    if (isPage) scanButton.textContent = '重新掃描';
+    $('#scanLabel').textContent = '重新掃描';
+    if (scan.images.length) showHelpFirstTime();
   } catch (error) {
     console.error(error);
     scan = null;
@@ -325,11 +382,72 @@ $('#settings').addEventListener('click', () => chrome.runtime.openOptionsPage())
 
 async function renderLocation() {
   settings = await loadSettings();
+  const custom = settings.mode === 'custom';
   let root = ['下載', ...splitFolder(settings.subfolder)].join('/');
-  if (settings.mode === 'custom') root = (await getDirectoryHandle().catch(() => null))?.name || '（尚未選擇資料夾）';
+  if (custom) root = (await getDirectoryHandle().catch(() => null))?.name || '（尚未選擇資料夾）';
   const parts = settings.organize && scan ? [root, ...splitFolder(scan.folder)] : [root];
   folderEl.textContent = `${parts.join('/')}/`;
-  folderEl.parentElement.title = `存到 ${folderEl.textContent}\n點一下變更存放位置`;
+  const location = $('#location');
+  location.classList.toggle('no-open', custom);
+  location.title = custom
+    ? `存到自選資料夾 ${folderEl.textContent}\n（瀏覽器不允許擴充功能開啟自選資料夾，請在檔案總管中前往）`
+    : `存到 ${folderEl.textContent}\n點一下在檔案總管中開啟`;
+}
+
+// 在下載紀錄裡找一個存在 parts 所在資料夾的檔案：優先同檔名，否則同資料夾中最新的
+//（另存新檔時檔名會變成 name (1).ext）。
+async function findDownloadIn(parts) {
+  const items = await chrome.downloads.search({ exists: true, state: 'complete', orderBy: ['-startTime'], limit: 0 });
+  const normalize = path => path.replace(/\\/g, '/').toLowerCase();
+  const file = `/${parts.join('/').toLowerCase()}`;
+  const dir = `/${parts.slice(0, -1).join('/').toLowerCase()}/`;
+  const exact = items.find(item => normalize(item.filename).endsWith(file));
+  if (exact) return exact.id;
+  const sameDir = items.find(item => {
+    const path = normalize(item.filename);
+    return path.slice(0, path.lastIndexOf('/') + 1).endsWith(dir);
+  });
+  return sameDir?.id ?? null;
+}
+
+// 左下角的存放位置：開啟這次掃描的作品資料夾（chrome.downloads.show 會開檔案總管並選取檔案）。
+// 只能開「下載紀錄裡有檔案」的資料夾；還沒下載過就開下載資料夾本身。
+$('#location').addEventListener('click', async () => {
+  settings = await loadSettings();
+  if (settings.mode === 'custom') {
+    statusEl.textContent = `瀏覽器不允許擴充功能開啟自選資料夾，請在檔案總管中前往 ${folderEl.textContent}`;
+    return;
+  }
+  const parts = buildPathParts({ settings, folder: scan?.folder ?? '', image: { filename: '_' }, index: 0 });
+  const id = await findDownloadIn(parts).catch(() => null);
+  if (id != null) {
+    chrome.downloads.show(id);
+  } else {
+    chrome.downloads.showDefaultFolder();
+    statusEl.textContent = '這個資料夾還沒有下載過的檔案，已開啟下載資料夾。';
+  }
+});
+
+// 拼接輸出後，在 container 後面加「開啟資料夾」；自選資料夾改顯示完整的相對路徑。
+async function appendOpenFolder(container, parts) {
+  container.querySelector('.open-folder')?.remove();
+  if (settings.mode === 'custom') {
+    const root = await getDirectoryHandle().catch(() => null);
+    const path = document.createElement('span');
+    path.className = 'open-folder saved-path';
+    path.textContent = `位置：${[root?.name, ...parts.slice(0, -1)].filter(Boolean).join('/')}/`;
+    container.append(' ', path);
+    return;
+  }
+  const id = await findDownloadIn(parts).catch(() => null);
+  if (id == null) return;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'open-folder';
+  button.title = '在檔案總管中開啟並選取檔案';
+  button.append(icon('folder'), '開啟資料夾');
+  button.addEventListener('click', () => chrome.downloads.show(id));
+  container.append(' ', button);
 }
 
 // 自選資料夾模式：取得寫入權限（按鈕點擊的使用者手勢內才能跳出允許提示）。
@@ -343,12 +461,12 @@ async function getWritableRoot() {
 }
 
 // 回傳 'written' 或 'skipped'。
-async function writeFile(root, parts, blob) {
+async function writeFile(root, parts, blob, onExisting = settings.onExisting) {
   let dir = root;
   for (const part of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(part, { create: true });
   const name = parts.at(-1);
   let candidate = name;
-  if (settings.onExisting !== 'overwrite') {
+  if (onExisting !== 'overwrite') {
     const dot = name.lastIndexOf('.');
     const [base, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ''];
     for (let n = 1; ; n++) {
@@ -358,7 +476,7 @@ async function writeFile(root, parts, blob) {
         if (error.name === 'NotFoundError') break;
         throw error;
       }
-      if (settings.onExisting === 'skip') return 'skipped';
+      if (onExisting === 'skip') return 'skipped';
       // 另存為「name (1).ext」，和瀏覽器下載的行為一致。
       candidate = `${base} (${n})${ext}`;
     }
@@ -441,6 +559,7 @@ downloadButton.addEventListener('click', async () => {
     }
     // 重新標示已下載的圖片。
     render(await findDownloaded().catch(() => new Set()));
+    if (settings.mode !== 'custom' && (result.succeeded || result.skipped)) parts.push('點下方的存放位置可開啟資料夾');
     statusEl.textContent = `${parts.join('，')}。`;
   }
   updateSelection();

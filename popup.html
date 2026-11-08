@@ -8,56 +8,196 @@
 </head>
 <!-- 同一個頁面兩種用法：插件彈窗，或帶 ?tab=<分頁ID> 開成下載分頁（body.page）。 -->
 <body class="popup">
-  <header>
+  <!-- 單色線條圖示，用 <svg class="icon"><use href="#i-名稱"/></svg> 引用，顏色跟著文字。 -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-scan" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.68 5.08L10.33 2.55H13.67L14.32 5.08L15.26 5.47L17.51 4.14L19.86 6.49L18.53 8.74L18.92 9.68L21.45 10.33V13.67L18.92 14.32L18.53 15.26L19.86 17.51L17.51 19.86L15.26 18.53L14.32 18.92L13.67 21.45H10.33L9.68 18.92L8.74 18.53L6.49 19.86L4.14 17.51L5.47 15.26L5.08 14.32L2.55 13.67V10.33L5.08 9.68L5.47 8.74L4.14 6.49L6.49 4.14L8.74 5.47Z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-8 8"/><path d="M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M3 17l5-5 4 4 3-3 6 6"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5V14"/><path d="M12 17.5h.01"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="i-open" viewBox="0 0 24 24"><path d="M8 16L16 8M10 8h6v6"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></symbol>
+    <symbol id="i-stitch" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="8" rx="1.5"/><rect x="5" y="13" width="14" height="8" rx="1.5"/></symbol>
+    <symbol id="i-zoom" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-prev" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+    <symbol id="i-next" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
+    <symbol id="i-right" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="i-left" viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></symbol>
+  </svg>
+
+  <!-- 1. 頁首：這是什麼頁面、掃了哪裡；設定 -->
+  <header class="topbar">
     <div class="title">
+      <img class="logo" src="icons/icon.svg" alt="" width="28" height="28">
       <h1>頁面圖片</h1>
-      <span id="source" class="muted"></span>
+      <span id="source" class="chip" hidden></span>
       <span id="target" class="muted target"></span>
     </div>
-    <span id="count" class="muted">尚未掃描</span>
-    <button id="openTab" class="icon-button popup-only" title="在分頁中開啟（圖片多時比較好選）">⤢ 分頁</button>
+    <button id="openTab" class="ghost popup-only" title="在分頁中開啟（圖片多時比較好選）">
+      <svg class="icon"><use href="#i-expand"/></svg><span>分頁</span>
+    </button>
+    <button id="settings" class="ghost square" title="設定" aria-label="設定">
+      <svg class="icon"><use href="#i-settings"/></svg>
+    </button>
   </header>
 
+  <!-- 2. 工具列：掃描與選取 -->
   <div class="toolbar">
-    <button id="scan" class="primary">掃描目前頁面</button>
+    <button id="scan" class="primary">
+      <svg class="icon"><use href="#i-scan"/></svg><span id="scanLabel">掃描目前頁面</span>
+    </button>
+    <span class="divider"></span>
     <button id="selectAll" disabled>全選</button>
     <button id="selectNone" disabled>全不選</button>
+    <span id="count" class="muted count">尚未掃描</span>
     <label class="slider" title="縮圖大小">
-      <span aria-hidden="true">🖼</span>
+      <svg class="icon"><use href="#i-image"/></svg>
       <input type="range" id="thumbSize" min="80" max="200" step="10" aria-label="縮圖大小">
     </label>
+    <div class="help-wrap">
+      <button id="helpButton" class="ghost square" aria-label="操作說明" aria-expanded="false" aria-controls="helpPanel" title="操作說明">
+        <svg class="icon"><use href="#i-help"/></svg>
+      </button>
+      <div id="helpPanel" class="help-panel" role="dialog" aria-label="操作說明" hidden>
+        <div class="help-head">
+          <strong>操作說明</strong>
+          <button id="helpClose" class="ghost square" aria-label="關閉"><svg class="icon"><use href="#i-close"/></svg></button>
+        </div>
+        <h2>選取</h2>
+        <dl>
+          <dt><kbd>Shift</kbd> + 點選</dt><dd>一次勾選或取消一段範圍</dd>
+          <dt>全選／全不選</dt><dd>已下載過的圖片預設不勾選</dd>
+        </dl>
+        <h2>看大圖</h2>
+        <dl>
+          <dt>滑到圖片上按 <kbd>空白鍵</kbd></dt><dd>或點圖片右上角的放大鏡</dd>
+          <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>上一張／下一張</dd>
+          <dt><kbd>空白鍵</kbd></dt><dd>勾選或取消這張</dd>
+          <dt><kbd>Esc</kbd></dt><dd>關閉大圖</dd>
+        </dl>
+        <h2>其他</h2>
+        <dl>
+          <dt>左下角的存放位置</dt><dd>點一下開啟資料夾</dd>
+          <dt class="page-only">拼接</dt><dd class="page-only">勾 2 張以上，依勾選順序拼成一張</dd>
+          <dt class="popup-only">右上角「分頁」</dt><dd class="popup-only">圖片多時改用分頁，也才能拼接</dd>
+        </dl>
+      </div>
+    </div>
   </div>
-  <p class="muted hint">Shift + 點選可選取範圍；滑到圖片上按空白鍵或點 🔍 看大圖</p>
 
-  <p id="status" role="status">按「掃描目前頁面」列出可下載圖片。</p>
-  <main id="images" aria-live="polite"></main>
+  <!-- 3. 圖片 -->
+  <main id="images" aria-live="polite">
+    <p class="empty">按「掃描目前頁面」，列出這個頁面上可以下載的圖片。</p>
+  </main>
 
+  <!-- 4. 頁尾：狀態訊息、存到哪裡（點一下開啟）、下載 -->
   <footer>
-    <button id="settings" class="location" title="變更存放位置">
-      <span aria-hidden="true">📁</span>
-      <span id="folder">存放位置</span>
-    </button>
-    <button id="download" class="primary" disabled>下載勾選項目</button>
+    <p id="status" class="status" role="status"></p>
+    <div class="footer-row">
+      <button id="location" class="location">
+        <svg class="icon"><use href="#i-folder"/></svg>
+        <span id="folder">存放位置</span>
+        <svg class="icon open-hint"><use href="#i-open"/></svg>
+      </button>
+      <div class="footer-actions">
+        <button id="stitch" class="page-only" disabled title="把勾選的圖片拼成一張（依勾選順序）">
+          <svg class="icon"><use href="#i-stitch"/></svg><span id="stitchLabel">拼接</span>
+        </button>
+        <button id="download" class="primary" disabled>
+          <svg class="icon"><use href="#i-download"/></svg><span id="downloadLabel">下載</span>
+        </button>
+      </div>
+    </div>
   </footer>
+
+  <div id="stitchPanel" class="stitch" hidden>
+    <div class="stitch-bar">
+      <strong>圖片拼接</strong>
+      <span id="stCount" class="muted"></span>
+      <span class="spacer"></span>
+      <button id="stClose" class="ghost square" title="關閉（Esc）" aria-label="關閉">
+        <svg class="icon"><use href="#i-close"/></svg>
+      </button>
+    </div>
+
+    <div class="stitch-controls">
+      <fieldset class="segmented" aria-label="拼接方向">
+        <label><input type="radio" name="stDirection" value="down" checked><span><svg class="icon"><use href="#i-down"/></svg>向下</span></label>
+        <label><input type="radio" name="stDirection" value="right"><span><svg class="icon"><use href="#i-right"/></svg>向右</span></label>
+        <label><input type="radio" name="stDirection" value="left"><span><svg class="icon"><use href="#i-left"/></svg>向左</span></label>
+      </fieldset>
+      <label class="control">
+        <span id="stAlignLabel">寬度對齊</span>
+        <select id="stAlign">
+          <option value="max">最大的（不損失畫質）</option>
+          <option value="min">最小的（檔案較小）</option>
+        </select>
+      </label>
+      <label class="control">
+        間距
+        <input id="stGap" type="number" min="0" max="200" step="5" value="0"> px
+      </label>
+      <label class="control">
+        格式
+        <select id="stFormat">
+          <option value="image/png">PNG（無損）</option>
+          <option value="image/jpeg">JPG（檔案較小）</option>
+        </select>
+      </label>
+    </div>
+
+    <div id="stStage" class="stitch-stage">
+      <canvas id="stPreview"></canvas>
+      <p id="stLoading" class="stitch-loading"></p>
+    </div>
+
+    <div class="stitch-order">
+      <span class="muted">順序（拖曳調整）</span>
+      <ol id="stOrder"></ol>
+      <button id="stReset" title="改回清單中的順序">
+        <svg class="icon"><use href="#i-list"/></svg><span>依清單順序</span>
+      </button>
+    </div>
+
+    <div class="stitch-bar stitch-footer">
+      <div class="stitch-info">
+        <span id="stSize"></span>
+        <span id="stLimit" class="stitch-limit" hidden>
+          超過單張圖片上限（每邊 32,767 px）：
+          <label><input type="radio" name="stOverflow" value="shrink" checked> 等比縮小成一張</label>
+          <label><input type="radio" name="stOverflow" value="split"> 分成多張</label>
+        </span>
+      </div>
+      <button id="stExport" class="primary">輸出並下載</button>
+    </div>
+  </div>
 
   <div id="lightbox" class="lightbox" hidden>
     <div class="lightbox-bar">
       <span id="lbIndex"></span>
       <span id="lbName" class="lb-name"></span>
-      <button id="lbClose" class="icon-button" title="關閉（Esc）">✕</button>
+      <button id="lbClose" class="ghost square" title="關閉（Esc）" aria-label="關閉">
+        <svg class="icon"><use href="#i-close"/></svg>
+      </button>
     </div>
     <div class="lightbox-stage">
-      <button id="lbPrev" class="nav" title="上一張（←）">‹</button>
+      <button id="lbPrev" class="nav" title="上一張（←）" aria-label="上一張"><svg class="icon"><use href="#i-prev"/></svg></button>
       <img id="lbImage" alt="" referrerpolicy="no-referrer">
-      <button id="lbNext" class="nav" title="下一張（→）">›</button>
+      <button id="lbNext" class="nav" title="下一張（→）" aria-label="下一張"><svg class="icon"><use href="#i-next"/></svg></button>
     </div>
     <div class="lightbox-bar">
       <span id="lbDims" class="muted"></span>
-      <button id="lbToggle" class="primary" title="勾選／取消（空白鍵）"></button>
+      <button id="lbToggle" title="勾選／取消（空白鍵）"></button>
     </div>
   </div>
 
   <script src="shared.js"></script>
   <script src="popup.js"></script>
+  <script src="stitch.js"></script>
 </body>
 </html>
