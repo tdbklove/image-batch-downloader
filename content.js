@@ -170,8 +170,122 @@
       name: 'X',
       match: () => /(^|\.)(x|twitter)\.com$/.test(location.hostname),
       scan: scanX
+    },
+    {
+      name: 'Poipiku',
+      match: () => /(^|\.)poipiku\.com$/.test(location.hostname) && /^\/\d+\/\d+\.html/.test(location.pathname),
+      scan: scanPoipiku
     }
   ];
+
+  // ---- Poipiku ----
+  // 頁面上只有第一張的 640px 縮圖；其餘的要呼叫「展開」API（有密碼時要帶密碼），
+  // 原圖網址要呼叫「全畫面」API 取得（需要登入）。兩個都是頁面自己用的 API。
+
+  async function poipikuPost(path, data) {
+    const response = await fetch(path, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
+      body: new URLSearchParams(data)
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  }
+
+  const parseHtml = html => new DOMParser().parseFromString(html || '', 'text/html');
+  // 網站素材（R-18／警告／密碼的佔位圖、表情）不是作品圖。
+  const isPoipikuArt = src => {
+    try {
+      const url = new URL(src, location.href);
+      return /(^|\.)poipiku\.com$/.test(url.hostname) && !/^\/(img|assets)\//.test(url.pathname);
+    } catch {
+      return false;
+    }
+  };
+
+  async function scanPoipiku() {
+    const [, uid, iid] = location.pathname.match(/^\/(\d+)\/(\d+)\.html/);
+    const item = document.getElementById(`IllustItem_${iid}`);
+    // 密碼：讀你在頁面上密碼欄輸入的內容（不用另外輸入）。
+    const passInput = item?.querySelector('input[name="PAS"], .IllustItemExpandPass');
+    const password = (passInput?.value || '').trim();
+    const userName = item?.querySelector('.IllustItemUserName')?.textContent.trim() || uid;
+    const desc = (item?.querySelector('.IllustItemDesc')?.innerText || '').split('\n').find(line => line.trim()) || '';
+    const folder = `poipiku/${sanitize(`${userName}_${uid}`)}/${sanitize(desc ? `${iid}_${desc.slice(0, 30)}` : iid)}`;
+    const notes = [];
+
+    // 每張圖的「全畫面」ID：第一張是 -1，其餘從展開 API 的 showIllustDetail(uid, iid, ID) 取得。
+    const pages = [{ append: -1, thumb: item?.querySelector('.IllustItemThumbImg')?.src }];
+    if (passInput && !password) {
+      notes.push('這篇有密碼：請先在 Poipiku 頁面的密碼欄輸入密碼（不用按展開），再重新掃描。');
+    }
+    try {
+      const appended = await poipikuPost('/f/ShowAppendFileF.jsp', { UID: uid, IID: iid, PAS: password, MD: 0, TWF: -1 });
+      if (appended.result_num > 0) {
+        for (const link of parseHtml(appended.html).querySelectorAll('[onclick*="showIllustDetail"]')) {
+          const id = link.getAttribute('onclick').match(/showIllustDetail\(\s*\d+\s*,\s*\d+\s*,\s*(-?\d+)/)?.[1];
+          if (id) pages.push({ append: Number(id), thumb: link.querySelector('img')?.src });
+        }
+      } else if (appended.result_num < 0 && !notes.length) {
+        notes.push(password ? '密碼不正確，或這篇需要登入／追蹤作者才能看全部。' : '其餘的圖需要密碼、登入或追蹤作者才能看。');
+      }
+    } catch (error) {
+      notes.push(`展開其餘圖片失敗（${error.message}）。`);
+    }
+
+    let fallback = 0;
+    const problems = new Set(); // 取不到原圖的原因（顯示在狀態列，方便判斷）
+    const seenFiles = new Set();
+    const images = [];
+    for (const page of pages) {
+      let original = null;
+      try {
+        const detail = await poipikuPost('/f/ShowIllustDetailF.jsp', { ID: uid, TD: iid, AD: page.append, PAS: password });
+        if (detail.result === 1) {
+          const candidates = [...parseHtml(detail.html).querySelectorAll('img')]
+            .flatMap(img => [img.getAttribute('src'), img.getAttribute('data-src')]);
+          original = candidates.find(isPoipikuArt) || null;
+          if (original) original = new URL(original, location.href).href;
+          else problems.add(`全畫面沒有圖片網址：${(detail.html || '').replace(/\s+/g, ' ').slice(0, 150)}`);
+        } else {
+          // 代碼對照 Poipiku 自己的 trkDetailGate()：-2 是需要登入。
+          problems.add(detail.error_code === -2
+            ? '原圖需要登入 Poipiku 帳號才能取得（只按年齡確認不夠），登入後重新掃描即可'
+            : `全畫面 API 回傳 result=${detail.result}、error_code=${detail.error_code}`);
+        }
+      } catch (error) {
+        problems.add(`全畫面 API 失敗：${error.message}`);
+      }
+      const thumb = isPoipikuArt(page.thumb) ? page.thumb : null;
+      const url = original || thumb;
+      if (!url) continue;
+      if (!original) fallback++;
+      const path = new URL(url).pathname;
+      // 登入後第一張會同時出現在頁面和展開結果裡；同一個檔案只列一次（網址參數是時效簽章，不比）。
+      const fileKey = path.replace(/_\d+\.jpg$/, '');
+      if (seenFiles.has(fileKey)) {
+        if (!original) fallback--;
+        continue;
+      }
+      seenFiles.add(fileKey);
+      const ext = path.replace(/_\d+\.jpg$/, '').match(/\.(\w+)$/)?.[1] || 'jpg';
+      images.push({
+        url,
+        preview: thumb || url,
+        width: 0,
+        height: 0,
+        filename: `${iid}_${images.length + 1}.${original ? ext : 'jpg'}`, // 跳過佔位圖後重新編號
+        referer: 'https://poipiku.com/'
+      });
+    }
+    if (fallback) {
+      notes.push(`有 ${fallback} 張取不到原圖，改列出縮小版：${[...problems].join('；')}。`);
+      console.warn('Poipiku original lookup failed', [...problems]);
+    }
+    if (!images.length && !notes.length) notes.push('沒有找到圖片；R-18 作品需要先登入並開啟成人內容顯示。');
+    return { title: desc || document.title, folder, images, note: notes.join(' ') };
+  }
 
   // ---- X（Twitter）----
   // 圖片與 GIF 直接從頁面上的元素換成原檔網址；影片在頁面上是 blob:（串流），
