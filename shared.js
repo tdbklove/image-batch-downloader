@@ -74,6 +74,20 @@ async function findExistingFiles(pathList, settings, root = null) {
   return found;
 }
 
+// 確認下載到的內容真的是圖片／影片：伺服器有時回 200 卻給錯誤網頁或空檔，
+// 存下來會打不開。回傳 null 表示沒問題，否則回傳原因。只擋明顯不對的，認不出的格式放行。
+async function checkMediaBlob(blob, response = null) {
+  if (!blob.size) return '下載到空的檔案';
+  // 網路中斷時可能只收到前半段：和伺服器宣告的大小比對（有壓縮時長度不同，不比）。
+  const declared = Number(response?.headers.get('content-length'));
+  if (declared && !response.headers.get('content-encoding') && blob.size < declared) return '檔案不完整（下載中斷）';
+  if (/^(text\/(html|plain|xml)|application\/(json|xml))/i.test(blob.type)) return '下載到的是網頁，不是圖片';
+  const head = new Uint8Array(await blob.slice(0, 64).arrayBuffer());
+  const text = new TextDecoder().decode(head).trimStart().toLowerCase();
+  if (/^(<!doctype|<html|<\?xml(?![\s\S]*<svg)|<error|\{")/.test(text)) return '下載到的是網頁，不是圖片';
+  return null;
+}
+
 async function fileExists(root, parts) {
   try {
     let dir = root;

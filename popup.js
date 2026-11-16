@@ -3,6 +3,7 @@ const scanButton = $('#scan');
 const selectAllButton = $('#selectAll');
 const selectNoneButton = $('#selectNone');
 const downloadButton = $('#download');
+const cancelButton = $('#cancel');
 const stitchButton = $('#stitch');
 const thumbSizeInput = $('#thumbSize');
 const statusEl = $('#status');
@@ -26,6 +27,7 @@ let lastClickedPos = null;
 
 let selectionOrder = []; // 勾選的先後順序（visible 的位置），拼接時照這個順序
 let failedReasons = new Map(); // 上次下載失敗的圖片：scan.images 的索引 → 原因
+let canceling = false; // 按了取消、等待下載停止中
 
 // 所有勾選狀態的變更都經過這裡，才能記住勾選順序。
 function setChecked(pos, checked) {
@@ -58,7 +60,7 @@ function icon(name) {
 
 function updateSelection() {
   const checked = checkedItems().length;
-  downloadButton.disabled = checked === 0;
+  downloadButton.disabled = checked === 0 || !cancelButton.hidden; // 下載進行中不能再按
   $('#downloadLabel').textContent = checked ? `下載 ${checked} 張` : '下載';
   const stills = stitchablePositions().length; // 影片不能拼接
   stitchButton.disabled = stills < 2;
@@ -470,7 +472,7 @@ $('#openTab').addEventListener('click', async () => {
 
 chrome.runtime.onMessage.addListener(message => {
   if (message.type !== 'DOWNLOAD_PROGRESS') return;
-  statusEl.textContent = `下載中 ${message.done} / ${message.total}` + (message.failed ? `（失敗 ${message.failed}）` : '');
+  if (!canceling) statusEl.textContent = `下載中 ${message.done} / ${message.total}` + (message.failed ? `（失敗 ${message.failed}）` : '');
 });
 
 // ---- 存放位置 ----
@@ -585,15 +587,21 @@ async function writeFile(root, parts, blob, onExisting = settings.onExisting) {
   return 'written';
 }
 
+// 自選資料夾模式的取消：中斷進行中的 fetch，排隊中的不再開始。
+let customAbort = null;
+
 async function saveToCustomFolder(root, items) {
   const total = items.length;
   let done = 0;
   let skipped = 0;
+  let canceled = 0;
+  const abort = new AbortController();
+  customAbort = abort;
   const failures = [];
   const keepOpen = isPage ? '，請保持此分頁開啟' : '，請保持此視窗開啟';
   const queue = [...items];
   const worker = async () => {
-    while (queue.length) {
+    while (queue.length && !abort.signal.aborted) {
       const { image, index } = queue.shift();
       try {
         const parts = buildPathParts({ settings, folder: scan.folder, image, index });
@@ -601,20 +609,26 @@ async function saveToCustomFolder(root, items) {
         if (settings.onExisting === 'skip' && (await fileExists(root, parts))) {
           skipped++;
         } else {
-          const response = await fetch(image.url, { credentials: 'include' });
+          const response = await fetch(image.url, { credentials: 'include', signal: abort.signal });
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          if ((await writeFile(root, parts, await response.blob())) === 'skipped') skipped++;
+          const blob = await response.blob();
+          const problem = await checkMediaBlob(blob, response);
+          if (problem) throw new Error(problem);
+          if ((await writeFile(root, parts, blob)) === 'skipped') skipped++;
         }
       } catch (error) {
+        if (abort.signal.aborted) { canceled++; continue; } // 取消時中斷的不算失敗
         console.warn('Image save failed', image.url, error);
         failures.push({ url: image.url, reason: String(error.message || error) });
       }
       done++;
-      statusEl.textContent = `寫入中 ${done} / ${total}` + (failures.length ? `（失敗 ${failures.length}）` : '') + keepOpen;
+      if (!canceling) statusEl.textContent = `寫入中 ${done} / ${total}` + (failures.length ? `（失敗 ${failures.length}）` : '') + keepOpen;
     }
   };
   await Promise.all(Array.from({ length: Math.min(3, total) }, worker));
-  return { total, succeeded: total - skipped - failures.length, skipped, failures };
+  if (customAbort === abort) customAbort = null;
+  canceled += queue.length; // 還沒開始的
+  return { total, succeeded: total - skipped - failures.length - canceled, skipped, failures, canceled };
 }
 
 // ---- 下載 ----
@@ -624,6 +638,27 @@ downloadButton.addEventListener('click', async () => {
   if (!selected.length) return;
   downloadButton.disabled = true;
   settings = await loadSettings();
+  canceling = false;
+  cancelButton.hidden = false;
+  cancelButton.disabled = false;
+  try {
+    await downloadSelected(selected);
+  } finally {
+    cancelButton.hidden = true;
+    canceling = false;
+    updateSelection();
+  }
+});
+
+cancelButton.addEventListener('click', () => {
+  canceling = true;
+  cancelButton.disabled = true;
+  statusEl.textContent = '正在取消…';
+  if (customAbort) customAbort.abort();
+  else chrome.runtime.sendMessage({ type: 'CANCEL_DOWNLOADS' }).catch(() => {});
+});
+
+async function downloadSelected(selected) {
   let result;
   if (settings.mode === 'custom') {
     statusEl.textContent = `開始寫入 ${selected.length} 張…`;
@@ -657,8 +692,16 @@ downloadButton.addEventListener('click', async () => {
       parts.push(`失敗 ${failedReasons.size} 張（${[...new Set(failedReasons.values())].join('、')}）`);
       console.warn('Failed downloads', result.failures);
     }
-    // 重新標示已下載的圖片。
-    render(await findDownloaded().catch(() => new Set()), failedReasons.size ? [...failedReasons.keys()] : null);
+    // 重新標示已下載的圖片。取消時保留這批還沒下載到的勾選，按「下載」就能接著下載；
+    // 有失敗時只勾選失敗的。
+    const existing = await findDownloaded().catch(() => new Set());
+    let keepSelected = failedReasons.size ? [...failedReasons.keys()] : null;
+    if (result.canceled) {
+      parts.unshift('已取消');
+      parts.push(`${result.canceled} 張未下載（仍勾選中，按「下載」可以繼續）`);
+      keepSelected = selected.filter(item => !existing.has(item.index)).map(item => item.index);
+    }
+    render(existing, keepSelected);
     if (settings.mode !== 'custom' && (result.succeeded || result.skipped)) parts.push('點下方的存放位置可開啟資料夾');
     statusEl.textContent = `${parts.join('，')}。`;
     if (failedReasons.size) {
@@ -670,8 +713,7 @@ downloadButton.addEventListener('click', async () => {
       statusEl.append(' ', retry);
     }
   }
-  updateSelection();
-});
+}
 
 // 只勾選失敗的圖片再下載一次（中間改過勾選也沒關係）。
 function retryFailed() {

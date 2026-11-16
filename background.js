@@ -34,6 +34,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then(sendResponse, error => sendResponse({ error: String(error.message || error) }));
     return true;
   }
+  if (message.type === 'CANCEL_DOWNLOADS') {
+    cancelDownloads();
+    sendResponse({ ok: true });
+    return;
+  }
   if (message.type !== 'DOWNLOAD_IMAGES') return;
   downloadAll(message.images || [], message.folder || 'page-images').then(sendResponse);
   return true;
@@ -109,17 +114,21 @@ async function downloadAll(images, folder) {
   const total = jobs.length;
   let done = 0;
   let skipped = 0;
+  let canceled = 0;
   const failures = [];
   const queue = [...jobs];
+  const job = { canceled: false, ids: new Set() };
+  activeJob = job;
 
   const worker = async () => {
-    while (queue.length) {
+    while (queue.length && !job.canceled) {
       const { image, parts } = queue.shift();
       const filename = parts.join('/');
       try {
         if (existing.has(filename)) skipped++;
-        else await downloadOne(image, filename, conflictAction);
+        else await downloadOne(image, filename, conflictAction, job);
       } catch (error) {
+        if (job.canceled) { canceled++; continue; } // 取消時中斷的那幾張不算失敗
         console.warn('Image download failed', image.url, error);
         failures.push({ url: image.url, reason: String(error.message || error) });
       }
@@ -129,41 +138,68 @@ async function downloadAll(images, folder) {
   };
 
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, total) }, worker));
-  return { total, succeeded: total - skipped - failures.length, skipped, failures };
+  if (activeJob === job) activeJob = null;
+  canceled += queue.length; // 還沒開始的
+  return { total, succeeded: total - skipped - failures.length - canceled, skipped, failures, canceled };
+}
+
+// 目前進行中的批次下載：{ canceled, ids: 進行中的下載 ID }
+let activeJob = null;
+
+// 停止排隊中的下載，並取消已經開始的（Chrome 會刪掉未完成的檔案）。
+function cancelDownloads() {
+  if (!activeJob) return;
+  activeJob.canceled = true;
+  for (const id of activeJob.ids) chrome.downloads.cancel(id).catch(() => {});
 }
 
 // 需要 Referer 的網站改由 offscreen 文件 fetch 成 blob 再下載，
 // 確保上面的 Referer 規則會套用；其他網址直接交給下載管理員。
-async function downloadOne(image, filename, conflictAction) {
+async function downloadOne(image, filename, conflictAction, job = null) {
   if (!image.referer) {
-    await startAndWait({ url: image.url, filename, conflictAction });
+    await startAndWait({ url: image.url, filename, conflictAction }, job);
     return;
   }
   await ensureOffscreen();
   const fetched = await chrome.runtime.sendMessage({ type: 'OFFSCREEN_FETCH', url: image.url });
   if (!fetched?.blobUrl) throw new Error(fetched?.error || '下載內容失敗');
   try {
-    await startAndWait({ url: fetched.blobUrl, filename, conflictAction });
+    await startAndWait({ url: fetched.blobUrl, filename, conflictAction }, job);
   } finally {
     chrome.runtime.sendMessage({ type: 'OFFSCREEN_REVOKE', blobUrl: fetched.blobUrl }).catch(() => {});
   }
 }
 
-async function startAndWait(options) {
+async function startAndWait(options, job = null) {
   const id = await chrome.downloads.download({ ...options, saveAs: false });
+  job?.ids.add(id);
+  if (job?.canceled) chrome.downloads.cancel(id).catch(() => {}); // 剛好在取消後才開始的
   await new Promise((resolve, reject) => {
-    const listener = delta => {
-      if (delta.id !== id || !delta.state) return;
-      if (delta.state.current === 'complete') {
-        chrome.downloads.onChanged.removeListener(listener);
-        resolve();
-      } else if (delta.state.current === 'interrupted') {
-        chrome.downloads.onChanged.removeListener(listener);
-        chrome.downloads.search({ id }).then(([item]) => reject(new Error(item?.error || 'INTERRUPTED')));
-      }
+    let settled = false;
+    const finish = state => {
+      if (settled || (state !== 'complete' && state !== 'interrupted')) return;
+      settled = true;
+      chrome.downloads.onChanged.removeListener(listener);
+      if (state === 'complete') resolve();
+      else chrome.downloads.search({ id }).then(([item]) => reject(new Error(item?.error || 'INTERRUPTED')));
     };
+    const listener = delta => { if (delta.id === id && delta.state) finish(delta.state.current); };
     chrome.downloads.onChanged.addListener(listener);
+    // 很小的檔案可能在掛上監聽前就下載完了，補查一次目前狀態。
+    chrome.downloads.search({ id }).then(([item]) => finish(item?.state));
   });
+  // 伺服器回 200 卻給錯誤網頁或空檔時，Chrome 也算下載成功；檢查類型，不對就刪掉並算失敗。
+  const [item] = await chrome.downloads.search({ id });
+  const problem = !item ? null
+    : item.fileSize === 0 ? '下載到空的檔案'
+    : /^(text\/(html|plain|xml)|application\/(json|xml))/i.test(item.mime || '') ? '下載到的是網頁，不是圖片'
+    : item.totalBytes > 0 && item.bytesReceived < item.totalBytes ? '檔案不完整（下載中斷）'
+    : null;
+  if (problem) {
+    await chrome.downloads.removeFile(id).catch(() => {});
+    chrome.downloads.erase({ id }).catch(() => {});
+    throw new Error(problem);
+  }
 }
 
 let creatingOffscreen = null;
