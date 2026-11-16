@@ -55,7 +55,7 @@
     <span class="divider"></span>
     <button id="selectAll" disabled>全選</button>
     <button id="selectNone" disabled>全不選</button>
-    <span id="count" class="muted count">尚未掃描</span>
+    <span class="spacer"></span>
     <label class="slider" title="縮圖大小">
       <svg class="icon"><use href="#i-image"/></svg>
       <input type="range" id="thumbSize" min="80" max="200" step="10" aria-label="縮圖大小">
@@ -73,6 +73,7 @@
         <dl>
           <dt><kbd>Shift</kbd> + 點選</dt><dd>一次勾選或取消一段範圍</dd>
           <dt>全選／全不選</dt><dd>已下載過的圖片預設不勾選</dd>
+          <dt>篩選列</dt><dd>只看圖片或影片、隱藏已下載；全選和下載只算看得到的</dd>
         </dl>
         <h2>看大圖</h2>
         <dl>
@@ -89,6 +90,21 @@
         </dl>
       </div>
     </div>
+  </div>
+
+  <!-- 2.5 篩選：只影響顯示；全選、下載、拼接都只針對看得到的圖片 -->
+  <div id="filterBar" class="filterbar" hidden>
+    <fieldset id="typeFilter" class="segmented compact" aria-label="顯示類型">
+      <label><input type="radio" name="typeFilter" value="all" checked><span>全部 <b id="nAll"></b></span></label>
+      <label><input type="radio" name="typeFilter" value="image"><span>圖片 <b id="nImage"></b></span></label>
+      <label><input type="radio" name="typeFilter" value="video"><span>影片 <b id="nVideo"></b></span></label>
+    </fieldset>
+    <label class="toggle" title="把已經下載過的圖片從清單中藏起來">
+      <input type="checkbox" id="hideDownloaded">
+      <span>隱藏已下載 <b id="nDone"></b></span>
+    </label>
+    <span class="spacer"></span>
+    <span id="count" class="muted count"></span>
   </div>
 
   <!-- 3. 圖片 -->

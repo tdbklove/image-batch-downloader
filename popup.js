@@ -36,8 +36,66 @@ function setChecked(pos, checked) {
   if (checked) selectionOrder.push(pos);
 }
 
-const checkedItems = () => selectionOrder.map(pos => visible[pos]);
-const stitchablePositions = () => selectionOrder.filter(pos => visible[pos].image.type !== 'video');
+// ---- 篩選 ----
+// 只改變顯示：被藏起來的圖片保留勾選狀態，但下載、拼接、全選都只算看得到的。
+const filter = { type: 'all', hideDownloaded: false };
+const isVideoItem = item => item.image.type === 'video';
+function isShown(item) {
+  if (filter.type === 'image' && isVideoItem(item)) return false;
+  if (filter.type === 'video' && !isVideoItem(item)) return false;
+  return !(filter.hideDownloaded && item.downloaded);
+}
+const shownPositions = () => visible.flatMap((item, pos) => (isShown(item) ? [pos] : []));
+
+const allCheckedItems = () => selectionOrder.map(pos => visible[pos]); // 含被篩選藏起來的
+const checkedItems = () => allCheckedItems().filter(isShown);
+const stitchablePositions = () => selectionOrder.filter(pos => isShown(visible[pos]) && !isVideoItem(visible[pos]));
+
+function applyFilter() {
+  for (const item of visible) item.card.classList.toggle('filtered', !isShown(item));
+  const shownCount = shownPositions().length;
+  const parts = [shownCount === visible.length ? `${visible.length} 張` : `顯示 ${shownCount} / ${visible.length} 張`];
+  if (scan && scan.images.length > visible.length) parts.push(`隱藏 ${scan.images.length - visible.length} 張小圖`);
+  countEl.textContent = parts.join('・');
+  selectAllButton.disabled = selectNoneButton.disabled = shownCount === 0;
+  imagesEl.querySelector('.empty')?.remove();
+  if (visible.length && !shownCount) {
+    const empty = document.createElement('p');
+    empty.className = 'empty';
+    empty.textContent = '沒有符合篩選條件的圖片。';
+    imagesEl.append(empty);
+  }
+  lastClickedPos = null;
+  updateSelection();
+}
+
+function renderFilterBar() {
+  const videos = visible.filter(isVideoItem).length;
+  const done = visible.filter(item => item.downloaded).length;
+  $('#nAll').textContent = visible.length;
+  $('#nImage').textContent = visible.length - videos;
+  $('#nVideo').textContent = videos;
+  $('#nDone').textContent = done;
+  // 只有圖片和影片都有時才需要類型切換；選的類型沒有東西了就回到「全部」。
+  const mixed = videos > 0 && videos < visible.length;
+  $('#typeFilter').hidden = !mixed;
+  if (!mixed && filter.type !== 'all') setTypeFilter('all');
+  $('#hideDownloaded').disabled = done === 0;
+  $('#filterBar').hidden = visible.length === 0;
+}
+
+function setTypeFilter(type) {
+  filter.type = type;
+  document.querySelector(`input[name="typeFilter"][value="${type}"]`).checked = true;
+}
+
+for (const radio of document.querySelectorAll('input[name="typeFilter"]')) {
+  radio.addEventListener('change', () => { filter.type = radio.value; applyFilter(); });
+}
+$('#hideDownloaded').addEventListener('change', event => {
+  filter.hideDownloaded = event.target.checked;
+  applyFilter();
+});
 
 function isTooSmall(image) {
   const min = Number(settings.minSize) || 0;
@@ -77,7 +135,7 @@ const cacheKey = tabId => `scan:${tabId}`;
 
 async function saveCache() {
   if (!scan || !cachedTab) return;
-  const selected = checkedItems().map(item => item.index);
+  const selected = allCheckedItems().map(item => item.index);
   try {
     await chrome.storage.session.set({ [cacheKey(cachedTab.id)]: { url: cachedTab.url, scan, selected, at: Date.now() } });
   } catch (error) {
@@ -137,13 +195,6 @@ thumbSizeInput.addEventListener('input', () => {
 // selected：要勾選的圖片（scan.images 的索引，依勾選順序）；沒給就勾選所有沒下載過的。
 function render(existing = new Set(), selected = null) {
   const shown = scan.images.map((image, index) => ({ image, index })).filter(({ image }) => !isTooSmall(image));
-  const hidden = scan.images.length - shown.length;
-  const done = shown.filter(({ index }) => existing.has(index)).length;
-  const parts = [`${shown.length} 張`];
-  if (done) parts.push(`${done} 張已下載`);
-  if (hidden) parts.push(`隱藏 ${hidden} 張小圖`);
-  countEl.textContent = parts.join('・');
-
   imagesEl.replaceChildren();
   lastClickedPos = null;
   hoverPos = null;
@@ -219,24 +270,24 @@ function render(existing = new Set(), selected = null) {
     card.addEventListener('mouseenter', () => { hoverPos = pos; });
     card.addEventListener('mouseleave', () => { if (hoverPos === pos) hoverPos = null; });
     imagesEl.append(card);
-    return { image, index, card, check };
+    return { image, index, card, check, downloaded: existing.has(index) };
   });
 
   const posOf = new Map(visible.map((item, pos) => [item.index, pos]));
   selectionOrder = selected
     ? selected.map(index => posOf.get(index)).filter(pos => pos != null)
     : visible.flatMap((item, pos) => (item.check.checked ? [pos] : []));
-  const enabled = visible.length > 0;
-  selectAllButton.disabled = !enabled;
-  selectNoneButton.disabled = !enabled;
-  updateSelection();
+  renderFilterBar();
+  applyFilter(); // 也會更新按鈕與張數
 }
 
 function onCheckClick(event, pos) {
   const checked = event.currentTarget.checked; // 瀏覽器已經切換好了
   if (event.shiftKey && lastClickedPos != null) {
     const step = pos > lastClickedPos ? 1 : -1;
-    for (let i = lastClickedPos; i !== pos + step; i += step) setChecked(i, checked);
+    for (let i = lastClickedPos; i !== pos + step; i += step) {
+      if (isShown(visible[i])) setChecked(i, checked); // 篩選藏起來的不動
+    }
   } else {
     setChecked(pos, checked);
   }
@@ -246,12 +297,13 @@ function onCheckClick(event, pos) {
 
 selectAllButton.addEventListener('click', () => {
   // 已勾選的保留原本順序，其餘依清單順序接在後面。
-  visible.forEach((item, pos) => { if (!item.check.checked) setChecked(pos, true); });
+  // 只動看得到的（有篩選時）。
+  for (const pos of shownPositions()) if (!visible[pos].check.checked) setChecked(pos, true);
   updateSelection();
 });
 
 selectNoneButton.addEventListener('click', () => {
-  visible.forEach((_, pos) => setChecked(pos, false));
+  for (const pos of shownPositions()) setChecked(pos, false);
   updateSelection();
 });
 
@@ -281,7 +333,8 @@ function closeLightbox() {
 
 function showLightboxImage() {
   const { image } = visible[lightboxPos];
-  $('#lbIndex').textContent = `${lightboxPos + 1} / ${visible.length}`;
+  const order = shownPositions();
+  $('#lbIndex').textContent = `${order.indexOf(lightboxPos) + 1} / ${order.length}`;
   $('#lbName').textContent = image.filename;
   $('#lbDims').textContent = image.width ? `${image.width} × ${image.height}` : '';
   const isVideo = image.type === 'video';
@@ -317,7 +370,9 @@ function renderLightboxToggle() {
 }
 
 function moveLightbox(step) {
-  lightboxPos = (lightboxPos + step + visible.length) % visible.length;
+  const order = shownPositions(); // 篩選後看得到的才切換
+  const at = order.indexOf(lightboxPos);
+  lightboxPos = order[(at + step + order.length) % order.length];
   showLightboxImage();
 }
 
@@ -717,6 +772,7 @@ async function downloadSelected(selected) {
 
 // 只勾選失敗的圖片再下載一次（中間改過勾選也沒關係）。
 function retryFailed() {
+  if (filter.type !== 'all') { setTypeFilter('all'); applyFilter(); } // 失敗的可能被類型篩選藏起來
   visible.forEach((item, pos) => setChecked(pos, false));
   visible.forEach((item, pos) => { if (failedReasons.has(item.index)) setChecked(pos, true); });
   updateSelection();

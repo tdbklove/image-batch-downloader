@@ -99,8 +99,25 @@ h1 { font-size: 17px; font-weight: 700; margin: 0; white-space: nowrap; }
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
+/* ---- 2.5 篩選列 ---- */
+.filterbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.segmented.compact span { height: 26px; padding: 0 10px; font-size: 12px; }
+.segmented b, .toggle b { font-weight: 400; opacity: .7; }
+.segmented input:checked + span b { opacity: .85; }
+.toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.toggle input { margin: 0; accent-color: var(--accent); }
+.toggle:has(input:disabled) { opacity: .45; cursor: default; }
+.card.filtered { display: none; }
+
 .divider { width: 1px; height: 20px; margin: 0 4px; background: var(--border); }
-.count { flex: 1; min-width: 0; margin-left: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.count { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .slider { display: flex; align-items: center; gap: 6px; color: var(--muted); }
 .slider input { width: 90px; accent-color: var(--accent); }
 body.page .slider input { width: 130px; }
