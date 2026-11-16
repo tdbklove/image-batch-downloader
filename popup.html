@@ -27,7 +27,8 @@
     <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
     <symbol id="i-right" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
     <symbol id="i-left" viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></symbol>
-    <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z"/></symbol>
+    <symbol id="i-list"viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></symbol>
   </svg>
 
   <!-- 1. 頁首：這是什麼頁面、掃了哪裡；設定 -->
@@ -188,6 +189,7 @@
     <div class="lightbox-stage">
       <button id="lbPrev" class="nav" title="上一張（←）" aria-label="上一張"><svg class="icon"><use href="#i-prev"/></svg></button>
       <img id="lbImage" alt="" referrerpolicy="no-referrer">
+      <video id="lbVideo" controls playsinline hidden></video>
       <button id="lbNext" class="nav" title="下一張（→）" aria-label="下一張"><svg class="icon"><use href="#i-next"/></svg></button>
     </div>
     <div class="lightbox-bar">

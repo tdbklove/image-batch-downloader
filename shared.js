@@ -10,7 +10,7 @@ const DEFAULT_SETTINGS = {
   onExisting: 'skip' // 檔案已存在時：'skip' 跳過；'overwrite' 覆蓋；'keep' 另存為 name (1).ext
 };
 
-const KNOWN_EXT = /\.(jpe?g|png|gif|webp|avif|bmp|svg)$/i;
+const KNOWN_EXT = /\.(jpe?g|png|gif|webp|avif|bmp|svg|mp4|webm|mov)$/i;
 
 async function loadSettings() {
   const { settings } = await chrome.storage.local.get('settings');

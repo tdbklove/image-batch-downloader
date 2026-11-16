@@ -25,6 +25,7 @@ let hoverPos = null; // 滑鼠所在的卡片（visible 的位置），空白鍵
 let lastClickedPos = null;
 
 let selectionOrder = []; // 勾選的先後順序（visible 的位置），拼接時照這個順序
+let failedReasons = new Map(); // 上次下載失敗的圖片：scan.images 的索引 → 原因
 
 // 所有勾選狀態的變更都經過這裡，才能記住勾選順序。
 function setChecked(pos, checked) {
@@ -34,9 +35,11 @@ function setChecked(pos, checked) {
 }
 
 const checkedItems = () => selectionOrder.map(pos => visible[pos]);
+const stitchablePositions = () => selectionOrder.filter(pos => visible[pos].image.type !== 'video');
 
 function isTooSmall(image) {
   const min = Number(settings.minSize) || 0;
+  if (image.type === 'video') return false; // GIF／影片不會是圖示或頭像，常常比門檻小（例如 320×180）
   if (!image.width || !image.height) return false;
   return image.width < min || image.height < min;
 }
@@ -57,8 +60,53 @@ function updateSelection() {
   const checked = checkedItems().length;
   downloadButton.disabled = checked === 0;
   $('#downloadLabel').textContent = checked ? `下載 ${checked} 張` : '下載';
-  stitchButton.disabled = checked < 2;
-  $('#stitchLabel').textContent = checked >= 2 ? `拼接 ${checked} 張` : '拼接';
+  const stills = stitchablePositions().length; // 影片不能拼接
+  stitchButton.disabled = stills < 2;
+  $('#stitchLabel').textContent = stills >= 2 ? `拼接 ${stills} 張` : '拼接';
+  saveSelectionSoon();
+}
+
+// ---- 記住掃描結果 ----
+// 每個分頁最後一次的掃描結果與勾選存在 chrome.storage.session（只在記憶體，關瀏覽器就清掉）：
+// 彈窗不小心關掉再開、或從彈窗換到下載分頁時，直接還原，不用重新掃描。
+
+let cachedTab = null; // { id, url }：目前結果屬於哪個分頁
+const cacheKey = tabId => `scan:${tabId}`;
+
+async function saveCache() {
+  if (!scan || !cachedTab) return;
+  const selected = checkedItems().map(item => item.index);
+  try {
+    await chrome.storage.session.set({ [cacheKey(cachedTab.id)]: { url: cachedTab.url, scan, selected, at: Date.now() } });
+  } catch (error) {
+    console.warn('Saving scan cache failed', error);
+  }
+}
+
+let saveTimer = null;
+function saveSelectionSoon() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveCache, 300);
+}
+
+// 有同一個網址的結果就還原並回傳 true。
+async function restoreCache() {
+  const tab = await getTargetTab().catch(() => null);
+  if (!tab?.id) return false;
+  const cached = (await chrome.storage.session.get(cacheKey(tab.id)).catch(() => ({})))[cacheKey(tab.id)];
+  if (!cached || cached.url !== tab.url) return false;
+  settings = await loadSettings();
+  cachedTab = { id: tab.id, url: tab.url };
+  scan = cached.scan;
+  failedReasons = new Map();
+  showTarget(tab);
+  await chrome.runtime.sendMessage({ type: 'ENSURE_REFERERS', images: scan.images });
+  showScanSource();
+  render(await findDownloaded().catch(() => new Set()), cached.selected);
+  const time = new Date(cached.at).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  statusEl.textContent = `已還原 ${time} 的掃描結果；頁面有更新的話請按「重新掃描」。`;
+  $('#scanLabel').textContent = '重新掃描';
+  return true;
 }
 
 // ---- 縮圖大小 ----
@@ -84,7 +132,8 @@ thumbSizeInput.addEventListener('input', () => {
 
 // ---- 清單 ----
 
-function render(existing = new Set()) {
+// selected：要勾選的圖片（scan.images 的索引，依勾選順序）；沒給就勾選所有沒下載過的。
+function render(existing = new Set(), selected = null) {
   const shown = scan.images.map((image, index) => ({ image, index })).filter(({ image }) => !isTooSmall(image));
   const hidden = scan.images.length - shown.length;
   const done = shown.filter(({ index }) => existing.has(index)).length;
@@ -103,7 +152,7 @@ function render(existing = new Set()) {
 
     const check = document.createElement('input');
     check.type = 'checkbox';
-    check.checked = !existing.has(index); // 已下載過的預設不勾選
+    check.checked = selected ? selected.includes(index) : !existing.has(index); // 已下載過的預設不勾選
     check.addEventListener('click', event => onCheckClick(event, pos));
 
     const zoom = document.createElement('button');
@@ -143,6 +192,21 @@ function render(existing = new Set()) {
     name.textContent = image.filename;
 
     card.append(check, zoom, frame, dims, name);
+    if (failedReasons.has(index)) {
+      card.classList.add('failed');
+      const failed = document.createElement('span');
+      failed.className = 'fail-tag';
+      failed.textContent = '失敗';
+      failed.title = failedReasons.get(index);
+      card.append(failed);
+      card.title = `下載失敗：${failedReasons.get(index)}\n${image.url}`;
+    }
+    if (image.type === 'video') {
+      const tag = document.createElement('span');
+      tag.className = 'media-tag';
+      tag.append(icon('play'), image.gif ? 'GIF' : '影片');
+      card.append(tag);
+    }
     if (existing.has(index)) {
       card.classList.add('downloaded');
       const badge = document.createElement('span');
@@ -156,7 +220,10 @@ function render(existing = new Set()) {
     return { image, index, card, check };
   });
 
-  selectionOrder = visible.flatMap((item, pos) => (item.check.checked ? [pos] : []));
+  const posOf = new Map(visible.map((item, pos) => [item.index, pos]));
+  selectionOrder = selected
+    ? selected.map(index => posOf.get(index)).filter(pos => pos != null)
+    : visible.flatMap((item, pos) => (item.check.checked ? [pos] : []));
   const enabled = visible.length > 0;
   selectAllButton.disabled = !enabled;
   selectNoneButton.disabled = !enabled;
@@ -190,6 +257,7 @@ selectNoneButton.addEventListener('click', () => {
 
 const lightbox = $('#lightbox');
 const lbImage = $('#lbImage');
+const lbVideo = $('#lbVideo');
 let lightboxPos = null;
 
 function openLightbox(pos) {
@@ -202,6 +270,9 @@ function openLightbox(pos) {
 function closeLightbox() {
   lightbox.hidden = true;
   lbImage.removeAttribute('src');
+  lbVideo.pause();
+  lbVideo.removeAttribute('src');
+  lbVideo.load();
   visible[lightboxPos]?.card.scrollIntoView({ block: 'nearest' });
   lightboxPos = null;
 }
@@ -211,6 +282,20 @@ function showLightboxImage() {
   $('#lbIndex').textContent = `${lightboxPos + 1} / ${visible.length}`;
   $('#lbName').textContent = image.filename;
   $('#lbDims').textContent = image.width ? `${image.width} × ${image.height}` : '';
+  const isVideo = image.type === 'video';
+  lbImage.hidden = isVideo;
+  lbVideo.hidden = !isVideo;
+  if (isVideo) {
+    // GIF 在 X 上是無聲的循環 MP4，照網站上的樣子自動播放。
+    lbImage.removeAttribute('src');
+    lbVideo.poster = image.preview || '';
+    lbVideo.loop = lbVideo.muted = lbVideo.autoplay = Boolean(image.gif);
+    lbVideo.src = image.url;
+    renderLightboxToggle();
+    return;
+  }
+  lbVideo.pause();
+  lbVideo.removeAttribute('src');
   // 先顯示已載入的預覽圖，原圖載好再換上。
   lbImage.src = image.preview || image.url;
   if (image.preview && image.preview !== image.url) {
@@ -316,6 +401,19 @@ async function findDownloaded() {
   return new Set(paths.flatMap((parts, index) => (existing.has(parts.join('/')) ? [index] : [])));
 }
 
+function showTarget(tab) {
+  if (!isPage) return;
+  targetEl.textContent = tab.title || tab.url;
+  targetEl.title = tab.url;
+  document.title = `圖片：${tab.title || tab.url}`;
+}
+
+function showScanSource() {
+  sourceEl.textContent = scan.source;
+  sourceEl.hidden = false;
+  renderLocation();
+}
+
 async function runScan() {
   scanButton.disabled = true;
   statusEl.textContent = '正在掃描…';
@@ -324,11 +422,7 @@ async function runScan() {
     settings = await loadSettings();
     const tab = await getTargetTab();
     if (!tab?.id) throw new Error('無法取得目前分頁。');
-    if (isPage) {
-      targetEl.textContent = tab.title || tab.url;
-      targetEl.title = tab.url;
-      document.title = `圖片：${tab.title || tab.url}`;
-    }
+    showTarget(tab);
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
     const [{ result }] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
@@ -336,12 +430,13 @@ async function runScan() {
       args: [{ scroll: settings.autoScroll }]
     });
     scan = result;
+    failedReasons = new Map();
     // 先替防盜鏈網域加上 Referer 規則，預覽縮圖才載得出來。
     await chrome.runtime.sendMessage({ type: 'ENSURE_REFERERS', images: scan.images });
-    sourceEl.textContent = scan.source;
-    sourceEl.hidden = false;
-    renderLocation();
+    cachedTab = { id: tab.id, url: tab.url };
+    showScanSource();
     render(await findDownloaded().catch(() => new Set()));
+    saveCache();
     const tips = [scan.note];
     if (!scan.images.length) {
       tips.push(settings.autoScroll
@@ -367,6 +462,8 @@ scanButton.addEventListener('click', runScan);
 $('#openTab').addEventListener('click', async () => {
   const tab = await getTargetTab();
   if (!tab?.id) return;
+  clearTimeout(saveTimer);
+  await saveCache(); // 分頁會直接沿用這次的掃描結果與勾選
   await chrome.tabs.create({ url: `popup.html?tab=${tab.id}`, index: tab.index + 1, openerTabId: tab.id });
   window.close();
 });
@@ -553,17 +650,64 @@ downloadButton.addEventListener('click', async () => {
   } else {
     const parts = [`完成 ${result.succeeded} 張`];
     if (result.skipped) parts.push(`跳過 ${result.skipped} 張已存在的檔案`);
-    if (result.failures.length) {
-      parts.push(`失敗 ${result.failures.length} 張（${result.failures[0].reason}）`);
+    // 失敗的圖片標紅並只勾選它們，按一下「重試」就能再下載一次。
+    const reasonByUrl = new Map(result.failures.map(failure => [failure.url, failure.reason]));
+    failedReasons = new Map(selected.flatMap(item => (reasonByUrl.has(item.image.url) ? [[item.index, failureText(reasonByUrl.get(item.image.url))]] : [])));
+    if (failedReasons.size) {
+      parts.push(`失敗 ${failedReasons.size} 張（${[...new Set(failedReasons.values())].join('、')}）`);
       console.warn('Failed downloads', result.failures);
     }
     // 重新標示已下載的圖片。
-    render(await findDownloaded().catch(() => new Set()));
+    render(await findDownloaded().catch(() => new Set()), failedReasons.size ? [...failedReasons.keys()] : null);
     if (settings.mode !== 'custom' && (result.succeeded || result.skipped)) parts.push('點下方的存放位置可開啟資料夾');
     statusEl.textContent = `${parts.join('，')}。`;
+    if (failedReasons.size) {
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'inline-action';
+      retry.append(icon('scan'), `重試失敗的 ${failedReasons.size} 張`);
+      retry.addEventListener('click', retryFailed);
+      statusEl.append(' ', retry);
+    }
   }
   updateSelection();
 });
 
+// 只勾選失敗的圖片再下載一次（中間改過勾選也沒關係）。
+function retryFailed() {
+  visible.forEach((item, pos) => setChecked(pos, false));
+  visible.forEach((item, pos) => { if (failedReasons.has(item.index)) setChecked(pos, true); });
+  updateSelection();
+  downloadButton.click();
+}
+
+// Chrome 下載錯誤代碼 → 看得懂的說明。
+function failureText(reason) {
+  const known = {
+    SERVER_FORBIDDEN: '網站拒絕存取',
+    SERVER_BAD_CONTENT: '網站找不到檔案',
+    SERVER_UNAUTHORIZED: '需要登入',
+    SERVER_FAILED: '網站錯誤',
+    NETWORK_FAILED: '網路連線失敗',
+    NETWORK_TIMEOUT: '連線逾時',
+    NETWORK_DISCONNECTED: '網路中斷',
+    FILE_ACCESS_DENIED: '沒有寫入權限',
+    FILE_NO_SPACE: '磁碟空間不足',
+    FILE_NAME_TOO_LONG: '檔名太長',
+    FILE_FAILED: '寫入檔案失敗',
+    USER_CANCELED: '已取消'
+  };
+  if (known[reason]) return known[reason];
+  const status = String(reason).match(/HTTP (\d+)/)?.[1];
+  if (status === '403') return '網站拒絕存取';
+  if (status === '404') return '網站找不到檔案';
+  if (status === '429') return '下載太頻繁，網站暫時限制';
+  if (/Failed to fetch|NetworkError/i.test(reason)) return '網路連線失敗';
+  return String(reason);
+}
+
 renderLocation();
-if (isPage) runScan();
+// 有這個分頁的掃描結果就直接還原；下載分頁沒有結果時自動掃描。
+restoreCache()
+  .catch(error => { console.warn('Restoring scan cache failed', error); return false; })
+  .then(restored => { if (!restored && isPage) runScan(); });

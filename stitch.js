@@ -178,7 +178,8 @@ stOrder.addEventListener('dragend', () => {
 
 // 面板裡調整的順序也寫回清單，關掉再開仍是同樣順序。
 function syncSelectionOrder() {
-  selectionOrder = stItems.map(item => item.pos);
+  const inPanel = new Set(stItems.map(item => item.pos));
+  selectionOrder = [...inPanel, ...selectionOrder.filter(pos => !inPanel.has(pos))]; // 影片不在面板裡，保留勾選
 }
 
 $('#stReset').addEventListener('click', () => {
@@ -239,9 +240,10 @@ function renderStitchPreview() {
 }
 
 async function openStitch() {
-  if (selectionOrder.length < 2) return;
+  const positions = stitchablePositions(); // 影片不能拼接
+  if (positions.length < 2) return;
   // pos 是在 visible 中的位置（visible 項目本身沒有這個欄位）
-  stItems = selectionOrder.map(pos => ({ pos, image: visible[pos].image, bitmap: null }));
+  stItems = positions.map(pos => ({ pos, image: visible[pos].image, bitmap: null }));
   stReady = false;
   stitchPanel.hidden = false;
   $('#stCount').textContent = `${stItems.length} 張，依勾選順序`;

@@ -26,6 +26,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then(() => sendResponse({ ok: true }), error => sendResponse({ error: String(error) }));
     return true;
   }
+  if (message.type === 'FETCH_X_TWEET') {
+    // X 頁面上的掃描腳本受 CORS 限制，改由這裡查詢公開的嵌入推文 API。
+    if (!/^\d+$/.test(message.id) || !/^\w+$/.test(message.token)) return;
+    fetch(`https://cdn.syndication.twimg.com/tweet-result?id=${message.id}&token=${message.token}&lang=en`)
+      .then(response => (response.ok ? response.json() : { error: `HTTP ${response.status}` }))
+      .then(sendResponse, error => sendResponse({ error: String(error.message || error) }));
+    return true;
+  }
   if (message.type !== 'DOWNLOAD_IMAGES') return;
   downloadAll(message.images || [], message.folder || 'page-images').then(sendResponse);
   return true;
@@ -73,6 +81,7 @@ function ensureRefererRules(images, extensionTabId = null) {
 
 // 下載分頁關閉後，把它從各條 Referer 規則中移除。
 chrome.tabs.onRemoved.addListener(tabId => {
+  chrome.storage.session.remove(`scan:${tabId}`).catch(() => {}); // popup.js 記住的掃描結果
   ruleUpdate = ruleUpdate.then(async () => {
     const rules = (await chrome.declarativeNetRequest.getSessionRules())
       .filter(rule => rule.condition.tabIds?.includes(tabId));

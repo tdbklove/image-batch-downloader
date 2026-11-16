@@ -165,8 +165,197 @@
           .map(image => ({ ...image, referer: 'https://www.postype.com/' }));
         return { title, folder, images };
       }
+    },
+    {
+      name: 'X',
+      match: () => /(^|\.)(x|twitter)\.com$/.test(location.hostname),
+      scan: scanX
     }
   ];
+
+  // ---- X（Twitter）----
+  // 圖片與 GIF 直接從頁面上的元素換成原檔網址；影片在頁面上是 blob:（串流），
+  // 要向嵌入推文用的 syndication API 查 MP4 網址（由 background 代為 fetch）。
+
+  const X_MEDIA = /^\/media\/([\w-]+)(?:\.(\w+))?/;
+  const X_GIF_THUMB = /^\/tweet_video_thumb\/([\w-]+)/;
+  const X_VIDEO_THUMB = /^\/(?:ext_tw_video_thumb|amplify_video_thumb)\/(\d+)/;
+  const X_RESERVED = new Set(['home', 'explore', 'search', 'notifications', 'messages', 'i', 'settings', 'compose', 'bookmarks', 'lists']);
+
+  // 從元素找出所屬推文：{ id, user, photoIndex }。
+  function tweetOf(el) {
+    const parse = href => href?.match(/^\/([^/]+)\/status\/(\d+)(?:\/(?:photo|video)\/(\d+))?/);
+    let match = parse(el.closest('a[href*="/status/"]')?.getAttribute('href'));
+    if (!match) {
+      const article = el.closest('article');
+      const link = article?.querySelector('a[href*="/status/"] time')?.closest('a');
+      match = parse(link?.getAttribute('href'));
+    }
+    return match ? { user: match[1], id: match[2], photoIndex: Number(match[3]) || 0 } : null;
+  }
+
+  // 頁面上目前渲染出來的推文媒體；X 的時間軸是虛擬清單，捲動時要分次收集。
+  function collectXMedia(found, root = document) {
+    const add = (key, entry) => { if (!found.has(key)) found.set(key, { ...entry, seen: found.size }); };
+    for (const img of root.querySelectorAll('img[src*="pbs.twimg.com/media/"]')) {
+      if (img.closest('[data-testid="videoPlayer"], [data-testid="videoComponent"]')) continue; // 影片封面
+      const url = toAbsolute(img.src);
+      const match = url?.pathname.match(X_MEDIA);
+      if (!match) continue;
+      let format = match[2] || url.searchParams.get('format') || 'jpg';
+      if (format === 'webp') format = 'jpg';
+      add(`photo:${match[1]}`, {
+        kind: 'photo',
+        tweet: tweetOf(img),
+        url: `https://pbs.twimg.com/media/${match[1]}?format=${format}&name=orig`,
+        preview: img.src,
+        ext: format
+      });
+    }
+    for (const video of root.querySelectorAll('video')) {
+      const poster = toAbsolute(video.poster);
+      const tweet = tweetOf(video);
+      const gif = poster?.pathname.match(X_GIF_THUMB);
+      if (gif) {
+        // GIF 在 X 上其實是 MP4，網址可以直接由縮圖推出來。
+        add(`gif:${gif[1]}`, { kind: 'gif', tweet, url: `https://video.twimg.com/tweet_video/${gif[1]}.mp4`, preview: poster.href, ext: 'mp4' });
+        continue;
+      }
+      // 其他影片的封面可能在 *_video_thumb/ 或 /media/ 底下；網址要靠 API 查。
+      const key = poster?.pathname.match(X_VIDEO_THUMB)?.[1] || poster?.pathname || tweet?.id;
+      if (key) add(`video:${key}`, { kind: 'video', tweet, preview: poster?.href || '', ext: 'mp4' });
+    }
+  }
+
+  async function fetchTweet(id) {
+    // 嵌入推文（publish.twitter.com）用的公開 API；token 演算法與官方 react-tweet 相同。
+    const token = ((Number(id) / 1e15) * Math.PI).toString(36).replace(/(0+|\.)/g, '');
+    const data = await chrome.runtime.sendMessage({ type: 'FETCH_X_TWEET', id, token });
+    if (!data || data.error) throw new Error(data?.error || '查詢推文失敗');
+    if (data.__typename === 'TweetTombstone' || !data.id_str) throw new Error('推文無法公開查詢（可能是敏感內容或已刪除）');
+    return data;
+  }
+
+  // syndication 的 mediaDetails → 清單項目。
+  function mediaFromTweet(data) {
+    return (data.mediaDetails || []).map((media, i) => {
+      const base = { width: media.original_info?.width || 0, height: media.original_info?.height || 0, preview: `${media.media_url_https}?name=small`, user: data.user?.screen_name };
+      const name = `${data.id_str}_${i + 1}`;
+      if (media.type === 'photo') {
+        const ext = media.media_url_https.match(/\.(\w+)$/)?.[1] || 'jpg';
+        return { ...base, url: `${media.media_url_https}?name=orig`, filename: `${name}.${ext}`, mediaKey: `photo:${media.media_url_https.match(/\/media\/([\w-]+)/)?.[1]}` };
+      }
+      const best = (media.video_info?.variants || [])
+        .filter(variant => variant.content_type === 'video/mp4')
+        .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+      if (!best) return null;
+      return { ...base, url: best.url, filename: `${name}.mp4`, type: 'video', gif: media.type === 'animated_gif' };
+    }).filter(Boolean);
+  }
+
+  async function mapLimit(items, limit, fn) {
+    const results = new Array(items.length);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) {
+        const index = next++;
+        try { results[index] = await fn(items[index]); } catch (error) { results[index] = error; }
+      }
+    }));
+    return results;
+  }
+
+  async function scanX({ scroll }) {
+    const status = location.pathname.match(/^\/([^/]+)\/status\/(\d+)/);
+    const pageUser = status?.[1] || location.pathname.split('/')[1];
+    const userPage = pageUser && !X_RESERVED.has(pageUser.toLowerCase());
+    const folder = userPage ? `x/${sanitize(pageUser)}` : `x/${sanitize(location.pathname.split('/').filter(Boolean).join('_') || 'home')}`;
+    const notes = [];
+
+    // 單則推文頁：直接查 API，順序、原始尺寸、影片都最完整。
+    if (status) {
+      try {
+        const data = await fetchTweet(status[2]);
+        const images = mediaFromTweet(data);
+        if (images.length) return { title: `@${data.user?.screen_name || pageUser} ${data.text || ''}`.slice(0, 80), folder: `x/${sanitize(data.user?.screen_name || pageUser)}`, images };
+      } catch (error) {
+        notes.push(`${error.message}，改從頁面讀取。`);
+      }
+    }
+
+    // 時間軸／媒體頁（或 API 查不到時）：收集頁面上的媒體。
+    const found = new Map();
+    let root = document;
+    if (status) {
+      // 只取主推文，不要回覆串裡的圖。
+      const main = [...document.querySelectorAll('article')].find(article => tweetOf(article.querySelector('time') || article)?.id === status[2]);
+      if (main) root = main;
+    }
+    collectXMedia(found, root);
+    if (scroll && !status) {
+      const startY = scrollY;
+      let lastHeight = 0;
+      for (let i = 0; i < 80; i++) {
+        scrollBy(0, innerHeight * 0.8);
+        await sleep(400);
+        collectXMedia(found);
+        const atBottom = innerHeight + scrollY >= document.documentElement.scrollHeight - 4;
+        if (atBottom) {
+          if (document.documentElement.scrollHeight === lastHeight) break;
+          lastHeight = document.documentElement.scrollHeight;
+          await sleep(1000);
+          collectXMedia(found);
+        }
+      }
+      scrollTo(0, startY);
+    }
+
+    // 再向 API 查每則推文：頁面上只有縮圖網址，查了才有原始尺寸，影片也才有 MP4 網址。
+    // 有影片的推文優先；查不到的（敏感內容、超過上限）沿用頁面上的資料。
+    const entries = [...found.values()];
+    const tweetIds = [...new Set(entries.filter(entry => entry.tweet).map(entry => entry.tweet.id))];
+    const hasVideo = new Set(entries.filter(entry => entry.kind === 'video' && entry.tweet).map(entry => entry.tweet.id));
+    const lookup = [...tweetIds.filter(id => hasVideo.has(id)), ...tweetIds.filter(id => !hasVideo.has(id))].slice(0, 150);
+    const fromApi = new Map();
+    const results = await mapLimit(lookup, 4, fetchTweet);
+    results.forEach((result, i) => {
+      const media = result instanceof Error ? [] : mediaFromTweet(result);
+      if (media.length) fromApi.set(lookup[i], media);
+    });
+    const missingVideos = entries.filter(entry => entry.kind === 'video' && !fromApi.has(entry.tweet?.id)).length;
+    if (missingVideos) notes.push(`有 ${missingVideos} 部影片查不到下載網址（可能是敏感內容），只列出圖片和 GIF。`);
+    if (!scroll && !status) notes.push('時間軸只會載入畫面附近的推文；要一次列出更多，請在設定開啟「自動捲動載入」。');
+
+    // 依出現順序排列，同一則推文的媒體編號 _1、_2…
+    const images = [];
+    const counters = new Map();
+    const usedApi = new Set();
+    const prefix = tweet => (userPage || !tweet ? '' : `${sanitize(tweet.user)}_`);
+    for (const entry of entries.sort((a, b) => a.seen - b.seen)) {
+      const tweetId = entry.tweet?.id;
+      if (tweetId && fromApi.has(tweetId)) {
+        if (usedApi.has(tweetId)) continue;
+        usedApi.add(tweetId);
+        for (const item of fromApi.get(tweetId)) images.push({ ...item, filename: prefix({ user: item.user || entry.tweet.user }) + item.filename });
+        continue;
+      }
+      if (entry.kind === 'video') continue;
+      const n = entry.tweet ? (counters.get(tweetId) || 0) + 1 : 0;
+      if (entry.tweet) counters.set(tweetId, n);
+      const base = entry.tweet ? `${tweetId}_${entry.tweet.photoIndex || n}` : entry.url.match(/\/(?:media|tweet_video)\/([\w-]+)/)[1];
+      images.push({
+        url: entry.url,
+        preview: entry.preview,
+        width: 0,
+        height: 0,
+        filename: `${prefix(entry.tweet)}${base}.${entry.ext}`,
+        ...(entry.kind === 'gif' ? { type: 'video', gif: true } : {})
+      });
+    }
+    // 同一張圖可能因為檔名規則重複出現（例如 API 與頁面都有），以網址去重。
+    const unique = [...new Map(images.map(image => [image.url, image])).values()];
+    return { title: document.title, folder, images: unique, note: notes.join(' ') };
+  }
 
   const generic = {
     name: '一般網頁',
