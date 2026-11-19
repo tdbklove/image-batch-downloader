@@ -34,6 +34,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then(sendResponse, error => sendResponse({ error: String(error.message || error) }));
     return true;
   }
+  if (message.type === 'RESOLVE_X_FORMATS') {
+    resolveXFormats(message.items || []).then(sendResponse, () => sendResponse({}));
+    return true;
+  }
   if (message.type === 'CANCEL_DOWNLOADS') {
     cancelDownloads();
     sendResponse({ ok: true });
@@ -141,6 +145,29 @@ async function downloadAll(images, folder) {
   if (activeJob === job) activeJob = null;
   canceled += queue.length; // 還沒開始的
   return { total, succeeded: total - skipped - failures.length - canceled, skipped, failures, canceled };
+}
+
+// X 的原圖（name=orig）必須用原始格式，格式不對會 404。依序試猜測的格式、jpg、png、webp，
+// 回傳 { 媒體ID: 格式 }；都失敗的不列入（content.js 會改用 4096x4096）。
+async function resolveXFormats(items) {
+  const result = {};
+  const queue = items.filter(item => /^[\w-]+$/.test(item.id || ''));
+  const worker = async () => {
+    while (queue.length) {
+      const { id, guess } = queue.shift();
+      for (const format of [...new Set([guess, 'jpg', 'png', 'webp'].filter(f => /^\w+$/.test(f || '')))]) {
+        try {
+          const response = await fetch(`https://pbs.twimg.com/media/${id}?format=${format}&name=orig`, { method: 'HEAD' });
+          if (response.ok) {
+            result[id] = format;
+            break;
+          }
+        } catch {}
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: 4 }, worker));
+  return result;
 }
 
 // 目前進行中的批次下載：{ canceled, ids: 進行中的下載 ID }

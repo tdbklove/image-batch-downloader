@@ -92,8 +92,8 @@ async function fileExists(root, parts) {
   try {
     let dir = root;
     for (const part of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(part);
-    await dir.getFileHandle(parts.at(-1));
-    return true;
+    const file = await (await dir.getFileHandle(parts.at(-1))).getFile();
+    return file.size > 0; // 0 位元組是沒寫完的空檔，當作沒下載過
   } catch {
     return false;
   }

@@ -625,7 +625,9 @@ async function writeFile(root, parts, blob, onExisting = settings.onExisting) {
     const [base, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ''];
     for (let n = 1; ; n++) {
       try {
-        await dir.getFileHandle(candidate);
+        const existing = await dir.getFileHandle(candidate);
+        // 0 位元組的是上次沒寫完的空檔（例如寫入中彈窗被關掉），直接覆蓋。
+        if ((await existing.getFile()).size === 0) break;
       } catch (error) {
         if (error.name === 'NotFoundError') break;
         throw error;
@@ -635,10 +637,18 @@ async function writeFile(root, parts, blob, onExisting = settings.onExisting) {
       candidate = `${base} (${n})${ext}`;
     }
   }
+  // getFileHandle(create) 會先建立空檔，內容在 close() 時才寫入；失敗時把空檔刪掉。
   const file = await dir.getFileHandle(candidate, { create: true });
-  const writable = await file.createWritable();
-  await writable.write(blob);
-  await writable.close();
+  let writable = null;
+  try {
+    writable = await file.createWritable();
+    await writable.write(blob);
+    await writable.close();
+  } catch (error) {
+    await writable?.abort().catch(() => {});
+    if ((await file.getFile().catch(() => null))?.size === 0) await dir.removeEntry(candidate).catch(() => {});
+    throw error;
+  }
   return 'written';
 }
 

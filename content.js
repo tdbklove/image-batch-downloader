@@ -160,9 +160,14 @@
         // 排除作者頭像，以及放在 /assets/ 底下的網站素材（預設頭像、圖示）。
         // CDN 有防盜鏈，沒帶 Postype 的 Referer 會回 403。
         const skip = img => Boolean(img.closest('.profile-img, [class*="avatar" i]'));
+        // 原始檔名是亂數，存下來排序會亂；改成「文章ID_順序」（清單已經是文章中的順序）。
         const images = collectFromDom({ roots: roots.filter(Boolean), upgrade, skip })
           .filter(image => !/\/assets\//.test(new URL(image.url).pathname))
-          .map(image => ({ ...image, referer: 'https://www.postype.com/' }));
+          .map((image, i) => ({
+            ...image,
+            filename: postId ? `${postId}_${i + 1}.${image.filename.match(/\.(\w+)$/)?.[1] || 'jpg'}` : image.filename,
+            referer: 'https://www.postype.com/'
+          }));
         return { title, folder, images };
       }
     },
@@ -175,8 +180,84 @@
       name: 'Poipiku',
       match: () => /(^|\.)poipiku\.com$/.test(location.hostname) && /^\/\d+\/\d+\.html/.test(location.pathname),
       scan: scanPoipiku
+    },
+    {
+      name: '微博',
+      match: () => /(^|\.)weibo\.com$/.test(location.hostname) && /^\/\d+\/[A-Za-z0-9]+\/?$/.test(location.pathname),
+      scan: scanWeibo
     }
   ];
+
+  // ---- 微博 ----
+  // 用頁面自己用的貼文 API（/ajax/statuses/show），圖片取 largest（原圖），影片取畫質最高的 MP4。
+
+  const extOf = url => new URL(url).pathname.match(/\.(\w+)$/)?.[1]?.toLowerCase() || 'jpg';
+
+  // 影片：playback_list 裡解析度最高的 MP4，沒有的話用舊欄位。
+  function weiboVideo(mediaInfo, cover) {
+    if (!mediaInfo) return null;
+    const best = (mediaInfo.playback_list || [])
+      .map(entry => entry.play_info)
+      .filter(info => info?.url && /mp4/.test(info.mime || ''))
+      .sort((a, b) => (b.width * b.height || 0) - (a.width * a.height || 0))[0];
+    const url = best?.url || mediaInfo.mp4_720p_mp4 || mediaInfo.mp4_hd_url || mediaInfo.mp4_sd_url || mediaInfo.stream_url_hd || mediaInfo.stream_url;
+    if (!url) return null;
+    return { url: url.replace(/^http:/, 'https:'), preview: cover || '', width: best?.width || 0, height: best?.height || 0, type: 'video', ext: 'mp4' };
+  }
+
+  // 一張圖（pic_infos 的項目）→ 0～2 個清單項目（Live Photo 有圖也有影片）。
+  function weiboPicture(info) {
+    const best = info.largest || info.original || info.large || info.mw2000;
+    if (!best?.url) return [];
+    const preview = (info.bmiddle || info.large || best).url;
+    const items = [{ url: best.url, preview, width: best.width || 0, height: best.height || 0, ext: extOf(best.url) }];
+    // Live Photo 另外附上動態的影片；GIF 的 largest 本身就是 .gif，不用再拿影片版。
+    if (info.type === 'livephoto' && info.video) {
+      const motion = info.video.replace(/^http:/, 'https:');
+      items.push({ url: motion, preview, width: 0, height: 0, type: 'video', ext: extOf(motion) === 'mov' ? 'mov' : 'mp4' });
+    }
+    return items;
+  }
+
+  function weiboMedia(post) {
+    const items = [];
+    for (const entry of post.mix_media_info?.items || []) {
+      if (entry.type === 'pic') items.push(...weiboPicture(entry.data));
+      else if (entry.type === 'video') {
+        const video = weiboVideo(entry.data?.media_info, entry.data?.page_pic);
+        if (video) items.push(video);
+      }
+    }
+    if (!items.length) {
+      for (const id of post.pic_ids || []) if (post.pic_infos?.[id]) items.push(...weiboPicture(post.pic_infos[id]));
+      if (post.page_info?.object_type === 'video') {
+        const video = weiboVideo(post.page_info.media_info, post.page_info.page_pic);
+        if (video) items.push(video);
+      }
+    }
+    return items;
+  }
+
+  async function scanWeibo() {
+    const id = location.pathname.split('/')[2];
+    const response = await fetch(`/ajax/statuses/show?id=${encodeURIComponent(id)}`, { credentials: 'include' });
+    const post = await response.json();
+    if (!post.idstr) throw new Error(post.message || post.msg || '讀不到這則微博');
+    // 轉發的貼文：自己沒有圖時，下載被轉發的那則。
+    const source = !weiboMedia(post).length && post.retweeted_status ? post.retweeted_status : post;
+    const user = source.user || post.user || {};
+    const key = source.mblogid || source.idstr;
+    const images = weiboMedia(source).map((item, i) => ({ ...item, filename: `${key}_${i + 1}.${item.ext}` }));
+    const notes = [];
+    if (source !== post) notes.push('這是轉發的微博，列出的是原貼文的圖片。');
+    if (!images.length) notes.push('這則微博沒有圖片或影片。');
+    return {
+      title: (source.text_raw || '').slice(0, 60) || document.title,
+      folder: `weibo/${sanitize(`${user.screen_name || 'unknown'}_${user.idstr || ''}`)}`,
+      images,
+      note: notes.join(' ')
+    };
+  }
 
   // ---- Poipiku ----
   // 頁面上只有第一張的 640px 縮圖；其餘的要呼叫「展開」API（有密碼時要帶密碼），
@@ -323,6 +404,7 @@
         tweet: tweetOf(img),
         url: `https://pbs.twimg.com/media/${match[1]}?format=${format}&name=orig`,
         preview: img.src,
+        mediaId: match[1],
         ext: format
       });
     }
@@ -440,6 +522,16 @@
     if (missingVideos) notes.push(`有 ${missingVideos} 部影片查不到下載網址（可能是敏感內容），只列出圖片和 GIF。`);
     if (!scroll && !status) notes.push('時間軸只會載入畫面附近的推文；要一次列出更多，請在設定開啟「自動捲動載入」。');
 
+    // API 查不到的圖片（例如敏感內容）只能從縮圖推原圖網址，請 background 試出正確格式。
+    const guessing = entries.filter(entry => entry.kind === 'photo' && !fromApi.has(entry.tweet?.id));
+    let resolvedFormats = {};
+    if (guessing.length) {
+      resolvedFormats = await chrome.runtime.sendMessage({
+        type: 'RESOLVE_X_FORMATS',
+        items: guessing.map(entry => ({ id: entry.mediaId, guess: entry.ext }))
+      }).catch(() => ({})) || {};
+    }
+
     // 依出現順序排列，同一則推文的媒體編號 _1、_2…
     const images = [];
     const counters = new Map();
@@ -454,6 +546,17 @@
         continue;
       }
       if (entry.kind === 'video') continue;
+      if (entry.kind === 'photo') {
+        // 原圖（name=orig）要用正確的格式，縮圖的格式不一定一樣；格式猜錯會 404。
+        const format = resolvedFormats[entry.mediaId];
+        if (format) {
+          entry.ext = format;
+          entry.url = `https://pbs.twimg.com/media/${entry.mediaId}?format=${format}&name=orig`;
+        } else {
+          // 查不出來時改用 4096x4096：任何格式都拿得到，只有超過 4096 的超大圖會被縮小。
+          entry.url = `https://pbs.twimg.com/media/${entry.mediaId}?format=${entry.ext}&name=4096x4096`;
+        }
+      }
       const n = entry.tweet ? (counters.get(tweetId) || 0) + 1 : 0;
       if (entry.tweet) counters.set(tweetId, n);
       const base = entry.tweet ? `${tweetId}_${entry.tweet.photoIndex || n}` : entry.url.match(/\/(?:media|tweet_video)\/([\w-]+)/)[1];
