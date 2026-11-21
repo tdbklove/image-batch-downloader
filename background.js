@@ -152,8 +152,8 @@ async function downloadAll(images, folder) {
 }
 
 // 每個項目有幾個候選網址（例如原圖的各種副檔名），用 HEAD 依序試，回傳 { key: 第一個存在的網址 }。
-// 只接受 Pinterest 的圖片／影片伺服器，避免被拿來探測任意網址。
-const PROBE_HOSTS = /^https:\/\/(i|v1|v\d*)\.pinimg\.com\//;
+// 只接受 Pinterest、噗浪的圖片／影片伺服器，避免被拿來探測任意網址。
+const PROBE_HOSTS = /^https:\/\/((i|v1|v\d*)\.pinimg\.com|images\.plurk\.com)\//;
 async function firstWorkingUrls(items) {
   const result = {};
   const queue = items.filter(item => item?.key && Array.isArray(item.candidates));

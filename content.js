@@ -90,11 +90,58 @@
   // 無限捲動的頁面捲不到底，所以有上限：張數、時間、捲動次數，也可以從彈窗按「停止捲動」。
   // 回傳停止的原因，用來在狀態列說明。
   const SCROLL_LIMITS = { items: 300, ms: 90000, steps: 120 };
-  async function scrollCollect(collect = () => {}, count = () => 0, delay = 450) {
-    globalThis.__imageBatchStop = false;
+
+  // 一般頁面：往下捲；捲到底且頁面不再變長就是結束。
+  function verticalMover() {
     const startY = scrollY;
-    const started = Date.now();
     let lastHeight = 0;
+    return {
+      step: () => scrollBy(0, innerHeight * 0.8),
+      async atEnd(collect) {
+        if (innerHeight + scrollY < document.documentElement.scrollHeight - 4) return false;
+        if (document.documentElement.scrollHeight === lastHeight) return true;
+        lastHeight = document.documentElement.scrollHeight;
+        await sleep(1000); // 等下一批載入
+        collect();
+        return false;
+      },
+      restore: async () => scrollTo(0, startY)
+    };
+  }
+
+  // 橫向捲動的時間軸（Plurk 的河道）：沒有捲軸，要用方向鍵移動，→ 是往較舊的噗。
+  // 連續幾次按了都沒移動、也沒有新內容，就是到底了。結束後按 ← 直到第一則回到原本的位置。
+  // firstLeft()：第一個項目目前的水平位置；count()：已收集的數量。
+  function arrowKeyMover(firstLeft, count) {
+    const press = key => document.dispatchEvent(new KeyboardEvent('keydown', {
+      key, code: key, keyCode: key === 'ArrowRight' ? 39 : 37, which: key === 'ArrowRight' ? 39 : 37, bubbles: true, cancelable: true
+    }));
+    const startLeft = firstLeft();
+    let presses = 0;
+    let lastState = '';
+    let still = 0;
+    return {
+      restoreInBackground: true,
+      step: () => { press('ArrowRight'); presses++; },
+      async atEnd() {
+        const state = `${count()}/${firstLeft()}`;
+        still = state === lastState ? still + 1 : 0;
+        lastState = state;
+        return still >= 5;
+      },
+      async restore() {
+        // 移動有動畫，有時按了要等一下才動，所以看位置而不是看按了幾次。
+        for (let i = 0; i < presses * 3 && firstLeft() < startLeft - 20; i++) {
+          press('ArrowLeft');
+          await sleep(250);
+        }
+      }
+    };
+  }
+
+  async function scrollCollect(collect = () => {}, count = () => 0, delay = 450, mover = verticalMover()) {
+    globalThis.__imageBatchStop = false;
+    const started = Date.now();
     let reason = 'steps';
     // 頁面上的提示；按 Esc 或切到別的分頁就停止（下載分頁模式時停止按鈕不在眼前）。
     const stop = () => { globalThis.__imageBatchStop = true; };
@@ -111,22 +158,19 @@
         if (globalThis.__imageBatchStop) { reason = 'stopped'; break; }
         if (count() >= SCROLL_LIMITS.items) { reason = 'items'; break; }
         if (Date.now() - started > SCROLL_LIMITS.ms) { reason = 'time'; break; }
-        scrollBy(0, innerHeight * 0.8);
+        mover.step();
         await sleep(delay);
         collect();
         chrome.runtime.sendMessage({ type: 'SCAN_PROGRESS', count: count(), seconds: Math.round((Date.now() - started) / 1000) }).catch(() => {});
-        if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
-          if (document.documentElement.scrollHeight === lastHeight) { reason = 'end'; break; }
-          lastHeight = document.documentElement.scrollHeight;
-          await sleep(1000); // 等下一批載入
-          collect();
-        }
+        if (await mover.atEnd(collect)) { reason = 'end'; break; }
       }
     } finally {
       hint.remove();
       removeEventListener('keydown', onKey, true);
       document.removeEventListener('visibilitychange', onHide);
-      scrollTo(0, startY);
+      // 橫向時間軸回到原位要好幾秒，不用等它，掃描結果先回傳。
+      const restoring = mover.restore();
+      if (!mover.restoreInBackground) await restoring;
     }
     return reason;
   }
@@ -228,8 +272,134 @@
       name: 'Pinterest',
       match: () => /(^|\.)pinterest\.[a-z.]+$/.test(location.hostname),
       scan: scanPinterest
+    },
+    {
+      name: 'Plurk',
+      match: () => /(^|\.)plurk\.com$/.test(location.hostname),
+      scan: scanPlurk
     }
   ];
+
+  // ---- Plurk ----
+  // 圖片在 images.plurk.com：縮圖 mx_ID.jpg、原圖 ID.jpg。噗文本身的圖從頁面讀，
+  // 回應的圖用網頁自己用的 /Responses/get API（一次拿到全部回應，不用展開）。
+
+  const PLURK_IMAGE = /https?:\/\/images\.plurk\.com\/(mx_)?([\w-]+)\.(jpe?g|png|gif|webp)/gi;
+
+  // HTML 片段裡的噗浪圖片 → [{ id, ext }]，依出現順序。縮圖一律是 mx_ID.jpg，
+  // 副檔名要以原圖連結為準（原圖可能是 png、gif）。
+  function plurkImagesIn(html) {
+    const found = new Map(); // id → 原圖副檔名（只看到縮圖時先記 null）；Map 保留第一次出現的順序
+    for (const [, thumb, id, ext] of String(html || '').matchAll(PLURK_IMAGE)) {
+      if (!thumb) found.set(id, ext.toLowerCase());
+      else if (!found.has(id)) found.set(id, null);
+    }
+    return [...found].map(([id, ext]) => ({ id, ext: ext || 'jpg' }));
+  }
+
+  async function plurkResponses(plurkId) {
+    const contents = [];
+    let from = 0;
+    for (let page = 0; page < 20; page++) {
+      const response = await fetch('/Responses/get', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ plurk_id: plurkId, from_response_id: from })
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      const list = data.responses || [];
+      contents.push(...list.map(item => item.content));
+      if (!data.has_newer || !list.length) break;
+      from = list.at(-1).id;
+    }
+    return contents;
+  }
+
+  async function scanPlurk({ scroll }) {
+    const single = location.pathname.match(/^\/(?:m\/)?p\/([0-9a-z]+)/);
+    const notes = [];
+    // 每則噗：{ id（數字）, owner, html（噗文本身） }
+    const plurks = new Map();
+    if (single) {
+      const id = parseInt(single[1], 36);
+      // 噗文本身：頁面上不在回應區的部分（手機版、電腦版的結構不同，兩種都試）。
+      const main = document.querySelector(`[data-pid="${id}"] .text_holder`)
+        || [...document.querySelectorAll('.plurk-content')].find(el => !el.closest('.mw-response, .responses-holder'))
+        || document.querySelector('#permanent-plurk .text_holder, .bigplurk .text_holder');
+      // 噗主：電腦版在該噗的 .name，手機版是回應區以外的第一個 a.name（偷偷說會是 ಠ_ಠ）。
+      const owner = (document.querySelector(`[data-pid="${id}"] .name`)
+        || [...document.querySelectorAll('a.name')].find(el => !el.closest('.mw-response, .responses-holder, .response')))?.textContent.trim();
+      plurks.set(id, { id, owner, html: main?.innerHTML || '' });
+    } else {
+      const collect = () => {
+        for (const el of document.querySelectorAll('.plurk[data-pid]')) {
+          const id = Number(el.getAttribute('data-pid'));
+          if (!plurks.has(id)) plurks.set(id, { id, owner: el.querySelector('.name')?.textContent.trim(), html: el.querySelector('.text_holder')?.innerHTML || '' });
+        }
+      };
+      collect();
+      if (scroll) {
+        // 個人河道是橫向時間軸（沒有捲軸，用方向鍵移動）；搜尋結果是一般的直向清單。
+        const horizontal = document.getElementById('timeline_cnt') && !document.getElementById('vert_timeline');
+        const mover = horizontal
+          ? arrowKeyMover(() => Math.round(document.querySelector('.plurk[data-pid]')?.getBoundingClientRect().left || 0), () => plurks.size)
+          : verticalMover();
+        notes.push(scrollNote(await scrollCollect(collect, () => plurks.size, 700, mover)));
+      }
+      else notes.push('Plurk 的河道只會載入畫面附近的噗；要一次列出更多，請在設定開啟「自動捲動載入」。');
+    }
+
+    // 回應的圖：每則噗查一次 API（同時 3 則，最多 60 則）。
+    const list = [...plurks.values()];
+    const limited = list.slice(0, 60);
+    if (list.length > limited.length) notes.push(`噗太多，只讀取前 ${limited.length} 則噗的回應圖片。`);
+    const replies = await mapLimit(limited, 3, plurk => plurkResponses(plurk.id));
+    const failed = replies.filter(result => result instanceof Error).length;
+    if (failed) notes.push(`有 ${failed} 則噗讀不到回應（可能需要登入或是私噗）。`);
+
+    const images = [];
+    const seen = new Set();
+    list.forEach((plurk, i) => {
+      const fromReplies = replies[i] instanceof Error || !replies[i] ? [] : replies[i].flatMap(plurkImagesIn);
+      const base = plurk.id.toString(36);
+      const prefix = location.pathname.startsWith('/search') && plurk.owner ? `${sanitize(plurk.owner)}_` : ''; // 搜尋結果來自很多人，檔名加上噗主
+      let n = 0;
+      for (const picture of [...plurkImagesIn(plurk.html), ...fromReplies]) {
+        if (seen.has(picture.id)) continue;
+        seen.add(picture.id);
+        n++;
+        images.push({
+          url: `https://images.plurk.com/${picture.id}.${picture.ext}`,
+          preview: `https://images.plurk.com/mx_${picture.id}.jpg`, // 縮圖一律是 jpg
+          width: 0,
+          height: 0,
+          filename: `${prefix}${base}_${n}.${picture.ext}`
+        });
+      }
+    });
+
+    // 原圖尺寸：請 background 讀檔頭（和 Pinterest 一樣，每張只讀開頭一小段）。
+    if (images.length) {
+      const sizes = await chrome.runtime.sendMessage({
+        type: 'FIRST_WORKING_URL',
+        items: images.map(image => ({ key: image.url, candidates: [image.url] }))
+      }).catch(() => ({})) || {};
+      for (const image of images) {
+        image.width = sizes[image.url]?.width || 0;
+        image.height = sizes[image.url]?.height || 0;
+      }
+    }
+
+    const query = new URLSearchParams(location.search).get('q');
+    const first = location.pathname.split('/').filter(Boolean)[0];
+    const owner = single ? list[0]?.owner : null;
+    const folder = single ? `plurk/${sanitize(owner || 'posts')}`
+      : query ? `plurk/search_${sanitize(query)}`
+      : `plurk/${sanitize(first || 'timeline')}`;
+    return { title: document.title, folder, images, note: notes.filter(Boolean).join(' ') };
+  }
 
   // ---- Pinterest ----
   // 圖片網址 i.pinimg.com/{尺寸}/aa/bb/cc/雜湊.jpg，尺寸換成 originals 就是原圖，
