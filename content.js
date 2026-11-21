@@ -247,7 +247,8 @@
     const source = !weiboMedia(post).length && post.retweeted_status ? post.retweeted_status : post;
     const user = source.user || post.user || {};
     const key = source.mblogid || source.idstr;
-    const images = weiboMedia(source).map((item, i) => ({ ...item, filename: `${key}_${i + 1}.${item.ext}` }));
+    // 新浪的圖片、影片伺服器對瀏覽器的請求要求微博的 Referer，否則回 403（縮圖、播放、下載都要）。
+    const images = weiboMedia(source).map((item, i) => ({ ...item, filename: `${key}_${i + 1}.${item.ext}`, referer: 'https://weibo.com/' }));
     const notes = [];
     if (source !== post) notes.push('這是轉發的微博，列出的是原貼文的圖片。');
     if (!images.length) notes.push('這則微博沒有圖片或影片。');
