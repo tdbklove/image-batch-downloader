@@ -34,6 +34,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then(sendResponse, error => sendResponse({ error: String(error.message || error) }));
     return true;
   }
+  if (message.type === 'FIRST_WORKING_URL') {
+    firstWorkingUrls(message.items || []).then(sendResponse, () => sendResponse({}));
+    return true;
+  }
   if (message.type === 'RESOLVE_X_FORMATS') {
     resolveXFormats(message.items || []).then(sendResponse, () => sendResponse({}));
     return true;
@@ -145,6 +149,62 @@ async function downloadAll(images, folder) {
   if (activeJob === job) activeJob = null;
   canceled += queue.length; // 還沒開始的
   return { total, succeeded: total - skipped - failures.length - canceled, skipped, failures, canceled };
+}
+
+// 每個項目有幾個候選網址（例如原圖的各種副檔名），用 HEAD 依序試，回傳 { key: 第一個存在的網址 }。
+// 只接受 Pinterest 的圖片／影片伺服器，避免被拿來探測任意網址。
+const PROBE_HOSTS = /^https:\/\/(i|v1|v\d*)\.pinimg\.com\//;
+async function firstWorkingUrls(items) {
+  const result = {};
+  const queue = items.filter(item => item?.key && Array.isArray(item.candidates));
+  const worker = async () => {
+    while (queue.length) {
+      const { key, candidates } = queue.shift();
+      for (const url of candidates.filter(candidate => PROBE_HOSTS.test(candidate))) {
+        try {
+          // 圖片只讀開頭一小段：確認存在，順便從檔頭讀出原圖尺寸。影片只確認存在。
+          const isImage = !/\.mp4$/i.test(url);
+          const response = await fetch(url, isImage ? { headers: { Range: 'bytes=0-65535' } } : { method: 'HEAD' });
+          if (!response.ok) continue;
+          const size = isImage ? imageSize(new Uint8Array(await response.arrayBuffer())) : null;
+          result[key] = { url, width: size?.width || 0, height: size?.height || 0 };
+          break;
+        } catch {}
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: 4 }, worker));
+  return result;
+}
+
+// 從檔頭讀出圖片寬高（PNG、GIF、JPEG、WebP），讀不出來回傳 null。
+function imageSize(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const ascii = (offset, length) => String.fromCharCode(...bytes.subarray(offset, offset + length));
+  if (bytes.length >= 24 && ascii(1, 3) === 'PNG') return { width: view.getUint32(16), height: view.getUint32(20) };
+  if (bytes.length >= 10 && ascii(0, 3) === 'GIF') return { width: view.getUint16(6, true), height: view.getUint16(8, true) };
+  if (bytes.length >= 30 && ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WEBP') {
+    const chunk = ascii(12, 4);
+    if (chunk === 'VP8X') return { width: 1 + (bytes[24] | bytes[25] << 8 | bytes[26] << 16), height: 1 + (bytes[27] | bytes[28] << 8 | bytes[29] << 16) };
+    if (chunk === 'VP8 ') return { width: view.getUint16(26, true) & 0x3fff, height: view.getUint16(28, true) & 0x3fff };
+    if (chunk === 'VP8L') {
+      const bits = view.getUint32(21, true);
+      return { width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 };
+    }
+  }
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) {
+    // JPEG：逐段找 SOF（C0–CF，但不含 C4 DHT、C8、CC DAC）。
+    let offset = 2;
+    while (offset + 9 < bytes.length) {
+      if (bytes[offset] !== 0xff) return null;
+      const marker = bytes[offset + 1];
+      if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+        return { width: view.getUint16(offset + 7), height: view.getUint16(offset + 5) };
+      }
+      offset += 2 + view.getUint16(offset + 2);
+    }
+  }
+  return null;
 }
 
 // X 的原圖（name=orig）必須用原始格式，格式不對會 404。依序試猜測的格式、jpg、png、webp，

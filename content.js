@@ -86,21 +86,59 @@
     return [...found.values()];
   }
 
-  // 一路捲到底，讓延遲載入的圖片出現，最後捲回原位。
-  async function autoScroll() {
+  // 自動捲動：一邊往下捲一邊呼叫 collect（虛擬清單捲過去的項目會被移除，要邊捲邊收），最後捲回原位。
+  // 無限捲動的頁面捲不到底，所以有上限：張數、時間、捲動次數，也可以從彈窗按「停止捲動」。
+  // 回傳停止的原因，用來在狀態列說明。
+  const SCROLL_LIMITS = { items: 300, ms: 90000, steps: 120 };
+  async function scrollCollect(collect = () => {}, count = () => 0, delay = 450) {
+    globalThis.__imageBatchStop = false;
     const startY = scrollY;
+    const started = Date.now();
     let lastHeight = 0;
-    for (let i = 0; i < 60; i++) {
-      scrollBy(0, innerHeight * 0.9);
-      await sleep(250);
-      const atBottom = innerHeight + scrollY >= document.documentElement.scrollHeight - 4;
-      if (atBottom) {
-        if (document.documentElement.scrollHeight === lastHeight) break;
-        lastHeight = document.documentElement.scrollHeight;
-        await sleep(600);
+    let reason = 'steps';
+    // 頁面上的提示；按 Esc 或切到別的分頁就停止（下載分頁模式時停止按鈕不在眼前）。
+    const stop = () => { globalThis.__imageBatchStop = true; };
+    const onKey = event => { if (event.key === 'Escape') stop(); };
+    const onHide = () => { if (document.hidden) stop(); };
+    addEventListener('keydown', onKey, true);
+    document.addEventListener('visibilitychange', onHide);
+    const hint = document.createElement('div');
+    hint.textContent = '頁面圖片：自動捲動收集中… 按 Esc 或切到其他分頁即可停止';
+    hint.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:2147483647;padding:10px 16px;border-radius:8px;background:rgba(31,35,40,.9);color:#fff;font:14px system-ui,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.25);pointer-events:none';
+    document.documentElement.append(hint);
+    try {
+      for (let i = 0; i < SCROLL_LIMITS.steps; i++) {
+        if (globalThis.__imageBatchStop) { reason = 'stopped'; break; }
+        if (count() >= SCROLL_LIMITS.items) { reason = 'items'; break; }
+        if (Date.now() - started > SCROLL_LIMITS.ms) { reason = 'time'; break; }
+        scrollBy(0, innerHeight * 0.8);
+        await sleep(delay);
+        collect();
+        chrome.runtime.sendMessage({ type: 'SCAN_PROGRESS', count: count(), seconds: Math.round((Date.now() - started) / 1000) }).catch(() => {});
+        if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+          if (document.documentElement.scrollHeight === lastHeight) { reason = 'end'; break; }
+          lastHeight = document.documentElement.scrollHeight;
+          await sleep(1000); // 等下一批載入
+          collect();
+        }
       }
+    } finally {
+      hint.remove();
+      removeEventListener('keydown', onKey, true);
+      document.removeEventListener('visibilitychange', onHide);
+      scrollTo(0, startY);
     }
-    scrollTo(0, startY);
+    return reason;
+  }
+
+  // 停止原因 → 狀態列說明（捲到底就不用說）。
+  function scrollNote(reason) {
+    return {
+      stopped: '已停止自動捲動，列出目前找到的。',
+      items: `自動捲動已收集 ${SCROLL_LIMITS.items} 張，先停在這裡；要更多可以捲到頁面後段再掃描一次。`,
+      time: `自動捲動已進行 ${SCROLL_LIMITS.ms / 1000} 秒，先停在這裡（可能是無限捲動的頁面）。`,
+      steps: '自動捲動已達次數上限，先停在這裡（可能是無限捲動的頁面）。'
+    }[reason] || '';
   }
 
   const adapters = [
@@ -143,7 +181,7 @@
         } catch {}
         roots.push(document.querySelector('#post-content'));
         if (!roots.some(Boolean)) {
-          if (scroll) await autoScroll();
+          if (scroll) await scrollCollect(() => {}, () => document.images.length, 300);
           roots.push(document);
         }
         // Postype 的 CDN 網址帶 ?w=1000&q=90 之類的縮放參數，拿掉就是原圖。
@@ -185,8 +223,113 @@
       name: '微博',
       match: () => /(^|\.)weibo\.com$/.test(location.hostname) && /^\/\d+\/[A-Za-z0-9]+\/?$/.test(location.pathname),
       scan: scanWeibo
+    },
+    {
+      name: 'Pinterest',
+      match: () => /(^|\.)pinterest\.[a-z.]+$/.test(location.hostname),
+      scan: scanPinterest
     }
   ];
+
+  // ---- Pinterest ----
+  // 圖片網址 i.pinimg.com/{尺寸}/aa/bb/cc/雜湊.jpg，尺寸換成 originals 就是原圖，
+  // 但副檔名必須和原圖一致（猜錯會 403），所以請 background 試出存在的那個。
+  // 影片是 HLS（.m3u8），同一路徑通常有 720p 的 MP4 可以直接下載。
+
+  const PIN_IMAGE = /^\/(?:\d+x\d*|\d+x|originals)(?:_RS)?\/([0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]+)\.(\w+)$/;
+  const PIN_VIDEO = /^\/videos\/([\w-]+)\/(?:hls|expmp4|\d+p)\/([0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]+)/;
+
+  function pinIdOf(el) {
+    return el.closest('a[href*="/pin/"]')?.getAttribute('href').match(/\/pin\/([\w-]+)/)?.[1]
+      || (location.pathname.match(/^\/pin\/([\w-]+)/) && !el.closest('[data-grid-item]') ? location.pathname.match(/^\/pin\/([\w-]+)/)[1] : null);
+  }
+
+  // 收集 scope 裡的圖片與影片；key 用雜湊，同一張圖不同尺寸只算一次。
+  function collectPins(found, scope) {
+    for (const img of scope.querySelectorAll('img[src*="pinimg.com"]')) {
+      const url = toAbsolute(img.currentSrc || img.src);
+      const match = url?.pathname.match(PIN_IMAGE);
+      if (!match || /^\/\d+x\d+_RS\//.test(url.pathname)) continue; // 頭像、看板小圖
+      if (img.closest('video, [data-test-id*="avatar" i], [data-test-id*="board" i]')) continue;
+      const key = `img:${match[1]}`;
+      if (!found.has(key)) found.set(key, { kind: 'image', hash: match[1], ext: match[2], preview: url.href, pin: pinIdOf(img), seen: found.size });
+    }
+    for (const video of scope.querySelectorAll('video')) {
+      const src = toAbsolute(video.currentSrc || video.src || video.querySelector('source')?.src);
+      const match = src?.pathname.match(PIN_VIDEO);
+      if (!match) continue;
+      const key = `video:${match[2]}`;
+      if (!found.has(key)) found.set(key, { kind: 'video', family: match[1], hash: match[2], preview: video.poster || '', pin: pinIdOf(video), seen: found.size });
+    }
+  }
+
+  async function scanPinterest({ scroll }) {
+    const pinPage = location.pathname.match(/^\/pin\/([\w-]+)/);
+    const found = new Map();
+    const notes = [];
+    if (pinPage) {
+      // Pin 頁：只拿主圖（含輪播、多頁的 Pin），不要下面「更多類似內容」的格狀清單。
+      const main = document.querySelector('[data-test-id="closeup-body"], [data-test-id="pin-closeup"], [data-test-id="visual-content-container"]')
+        || document.querySelector('[data-test-id="pin-closeup-image"]')?.closest('div[data-test-id]')?.parentElement
+        || document.body;
+      collectPins(found, main);
+      for (const [key, entry] of found) {
+        if (entry.pin && entry.pin !== pinPage[1]) found.delete(key); // 混進來的其他 Pin
+        else entry.pin = pinPage[1]; // 主圖有時包在格狀容器裡，找不到 Pin ID
+      }
+    } else {
+      const collect = () => document.querySelectorAll('[data-grid-item]').forEach(item => collectPins(found, item));
+      collect();
+      if (scroll) {
+        notes.push(scrollNote(await scrollCollect(collect, () => found.size, 500)));
+      } else {
+        notes.push('Pinterest 只會載入畫面附近的 Pin；要一次列出更多，請在設定開啟「自動捲動載入」。');
+      }
+    }
+
+    // 請 background 找出原圖真正的副檔名、影片的 MP4。
+    const entries = [...found.values()].sort((a, b) => a.seen - b.seen);
+    const items = entries.map(entry => ({
+      key: entry.hash,
+      candidates: entry.kind === 'image'
+        ? [...new Set([entry.ext, 'jpg', 'png', 'gif', 'webp'])].map(ext => `https://i.pinimg.com/originals/${entry.hash}.${ext}`)
+        : ['720p', '1080p', 'expmp4'].map(size => `https://v1.pinimg.com/videos/${entry.family}/${size}/${entry.hash}.mp4`)
+    }));
+    const resolved = items.length ? (await chrome.runtime.sendMessage({ type: 'FIRST_WORKING_URL', items }).catch(() => ({}))) || {} : {};
+
+    const images = [];
+    const perPin = new Map();
+    let missingVideos = 0;
+    let fallbacks = 0;
+    for (const entry of entries) {
+      const hit = resolved[entry.hash]; // { url, width, height }
+      let url = hit?.url;
+      if (!url && entry.kind === 'video') { missingVideos++; continue; }
+      if (!url) { url = `https://i.pinimg.com/736x/${entry.hash}.${entry.ext}`; fallbacks++; }
+      const ext = url.match(/\.(\w+)$/)[1];
+      const n = (perPin.get(entry.pin) || 0) + 1;
+      perPin.set(entry.pin, n);
+      const base = entry.pin ? `${entry.pin}${n > 1 ? `_${n}` : ''}` : entry.hash.split('/').pop();
+      images.push({
+        url,
+        preview: entry.preview || url,
+        width: hit?.width || 0,
+        height: hit?.height || 0,
+        filename: `${base}.${ext}`,
+        ...(entry.kind === 'video' ? { type: 'video' } : {})
+      });
+    }
+    if (fallbacks) notes.push(`有 ${fallbacks} 張找不到原圖，改用 736px。`);
+    if (missingVideos) notes.push(`有 ${missingVideos} 部影片找不到可下載的 MP4（只有串流版本）。`);
+
+    const query = new URLSearchParams(location.search).get('q');
+    const parts = location.pathname.split('/').filter(Boolean);
+    const folder = pinPage ? 'pinterest/pins'
+      : query ? `pinterest/search_${sanitize(query)}`
+      : parts.length >= 2 && !['search', 'ideas', 'today'].includes(parts[0]) ? `pinterest/${sanitize(parts[0])}_${sanitize(parts[1])}`
+      : `pinterest/${sanitize(parts[0] || 'home')}`;
+    return { title: document.title, folder, images, note: notes.filter(Boolean).join(' ') };
+  }
 
   // ---- 微博 ----
   // 用頁面自己用的貼文 API（/ajax/statuses/show），圖片取 largest（原圖），影片取畫質最高的 MP4。
@@ -490,21 +633,7 @@
     }
     collectXMedia(found, root);
     if (scroll && !status) {
-      const startY = scrollY;
-      let lastHeight = 0;
-      for (let i = 0; i < 80; i++) {
-        scrollBy(0, innerHeight * 0.8);
-        await sleep(400);
-        collectXMedia(found);
-        const atBottom = innerHeight + scrollY >= document.documentElement.scrollHeight - 4;
-        if (atBottom) {
-          if (document.documentElement.scrollHeight === lastHeight) break;
-          lastHeight = document.documentElement.scrollHeight;
-          await sleep(1000);
-          collectXMedia(found);
-        }
-      }
-      scrollTo(0, startY);
+      notes.push(scrollNote(await scrollCollect(() => collectXMedia(found), () => found.size, 400)));
     }
 
     // 再向 API 查每則推文：頁面上只有縮圖網址，查了才有原始尺寸，影片也才有 MP4 網址。
@@ -572,17 +701,19 @@
     }
     // 同一張圖可能因為檔名規則重複出現（例如 API 與頁面都有），以網址去重。
     const unique = [...new Map(images.map(image => [image.url, image])).values()];
-    return { title: document.title, folder, images: unique, note: notes.join(' ') };
+    return { title: document.title, folder, images: unique, note: notes.filter(Boolean).join(' ') };
   }
 
   const generic = {
     name: '一般網頁',
     async scan({ scroll }) {
-      if (scroll) await autoScroll();
+      // 一般網頁捲完再收集；張數以頁面上的圖片數估算。
+      const reason = scroll ? await scrollCollect(() => {}, () => document.images.length, 300) : 'end';
       return {
         title: document.title,
         folder: `page-images/${sanitize(location.hostname)}`,
-        images: collectFromDom()
+        images: collectFromDom(),
+        note: scrollNote(reason)
       };
     }
   };

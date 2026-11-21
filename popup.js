@@ -480,6 +480,18 @@ async function runScan() {
     const tab = await getTargetTab();
     if (!tab?.id) throw new Error('無法取得目前分頁。');
     showTarget(tab);
+    if (settings.autoScroll) {
+      // 自動捲動可能要一段時間：掃描按鈕暫時變成「停止捲動」。
+      scanningTabId = tab.id;
+      scanButton.disabled = false;
+      $('#scanLabel').textContent = '停止捲動';
+      if (isPage) {
+        // 背景分頁不會載入更多內容（無限捲動要「看得到」才觸發），捲動期間切到原頁面，結束後再切回來。
+        returnTo = await chrome.tabs.getCurrent();
+        await chrome.tabs.update(tab.id, { active: true });
+        if (tab.windowId !== returnTo.windowId) await chrome.windows.update(tab.windowId, { focused: true });
+      }
+    }
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
     const [{ result }] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
@@ -510,11 +522,37 @@ async function runScan() {
     const reason = isPage && /No tab with id/.test(error.message) ? '原本的分頁已經關閉' : (error.message || error);
     statusEl.textContent = `掃描失敗：${reason}。瀏覽器內部頁面（chrome://、線上應用程式商店）無法掃描。`;
   } finally {
+    if (returnTo) {
+      chrome.tabs.update(returnTo.id, { active: true }).catch(() => {});
+      chrome.windows.update(returnTo.windowId, { focused: true }).catch(() => {});
+      returnTo = null;
+    }
+    scanningTabId = null;
     scanButton.disabled = false;
+    if (scan) $('#scanLabel').textContent = '重新掃描';
+    else $('#scanLabel').textContent = isPage ? '重新掃描' : '掃描目前頁面';
   }
 }
 
-scanButton.addEventListener('click', runScan);
+// 自動捲動中：記住在捲哪個分頁，按鈕改成停止。
+let scanningTabId = null;
+let returnTo = null; // 下載分頁模式自動捲動時，捲完要切回的分頁（這個下載分頁）
+
+scanButton.addEventListener('click', () => {
+  if (scanningTabId == null) {
+    runScan();
+    return;
+  }
+  // 通知頁面上的掃描腳本停止捲動，它會帶著目前找到的結果回來。
+  scanButton.disabled = true;
+  statusEl.textContent = '正在停止捲動…';
+  chrome.scripting.executeScript({ target: { tabId: scanningTabId }, func: () => { globalThis.__imageBatchStop = true; } }).catch(() => {});
+});
+
+chrome.runtime.onMessage.addListener(message => {
+  if (message.type !== 'SCAN_PROGRESS' || scanningTabId == null || scanButton.disabled) return;
+  statusEl.textContent = `自動捲動中，已找到 ${message.count} 張（${message.seconds} 秒）…可以按「停止捲動」提前結束。`;
+});
 
 $('#openTab').addEventListener('click', async () => {
   const tab = await getTargetTab();
