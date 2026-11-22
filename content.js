@@ -404,17 +404,16 @@
   // ---- Pinterest ----
   // 圖片網址 i.pinimg.com/{尺寸}/aa/bb/cc/雜湊.jpg，尺寸換成 originals 就是原圖，
   // 但副檔名必須和原圖一致（猜錯會 403），所以請 background 試出存在的那個。
-  // 影片是 HLS（.m3u8），同一路徑通常有 720p 的 MP4 可以直接下載。
+  // 只下載圖片，不處理影片。
 
   const PIN_IMAGE = /^\/(?:\d+x\d*|\d+x|originals)(?:_RS)?\/([0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]+)\.(\w+)$/;
-  const PIN_VIDEO = /^\/videos\/([\w-]+)\/(?:hls|expmp4|\d+p)\/([0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]+)/;
 
   function pinIdOf(el) {
     return el.closest('a[href*="/pin/"]')?.getAttribute('href').match(/\/pin\/([\w-]+)/)?.[1]
       || (location.pathname.match(/^\/pin\/([\w-]+)/) && !el.closest('[data-grid-item]') ? location.pathname.match(/^\/pin\/([\w-]+)/)[1] : null);
   }
 
-  // 收集 scope 裡的圖片與影片；key 用雜湊，同一張圖不同尺寸只算一次。
+  // 收集 scope 裡的圖片；key 用雜湊，同一張圖不同尺寸只算一次。
   function collectPins(found, scope) {
     for (const img of scope.querySelectorAll('img[src*="pinimg.com"]')) {
       const url = toAbsolute(img.currentSrc || img.src);
@@ -422,14 +421,7 @@
       if (!match || /^\/\d+x\d+_RS\//.test(url.pathname)) continue; // 頭像、看板小圖
       if (img.closest('video, [data-test-id*="avatar" i], [data-test-id*="board" i]')) continue;
       const key = `img:${match[1]}`;
-      if (!found.has(key)) found.set(key, { kind: 'image', hash: match[1], ext: match[2], preview: url.href, pin: pinIdOf(img), seen: found.size });
-    }
-    for (const video of scope.querySelectorAll('video')) {
-      const src = toAbsolute(video.currentSrc || video.src || video.querySelector('source')?.src);
-      const match = src?.pathname.match(PIN_VIDEO);
-      if (!match) continue;
-      const key = `video:${match[2]}`;
-      if (!found.has(key)) found.set(key, { kind: 'video', family: match[1], hash: match[2], preview: video.poster || '', pin: pinIdOf(video), seen: found.size });
+      if (!found.has(key)) found.set(key, { hash: match[1], ext: match[2], preview: url.href, pin: pinIdOf(img), seen: found.size });
     }
   }
 
@@ -457,24 +449,20 @@
       }
     }
 
-    // 請 background 找出原圖真正的副檔名、影片的 MP4。
+    // 請 background 找出原圖真正的副檔名（順便讀出尺寸）。
     const entries = [...found.values()].sort((a, b) => a.seen - b.seen);
     const items = entries.map(entry => ({
       key: entry.hash,
-      candidates: entry.kind === 'image'
-        ? [...new Set([entry.ext, 'jpg', 'png', 'gif', 'webp'])].map(ext => `https://i.pinimg.com/originals/${entry.hash}.${ext}`)
-        : ['720p', '1080p', 'expmp4'].map(size => `https://v1.pinimg.com/videos/${entry.family}/${size}/${entry.hash}.mp4`)
+      candidates: [...new Set([entry.ext, 'jpg', 'png', 'gif', 'webp'])].map(ext => `https://i.pinimg.com/originals/${entry.hash}.${ext}`)
     }));
     const resolved = items.length ? (await chrome.runtime.sendMessage({ type: 'FIRST_WORKING_URL', items }).catch(() => ({}))) || {} : {};
 
     const images = [];
     const perPin = new Map();
-    let missingVideos = 0;
     let fallbacks = 0;
     for (const entry of entries) {
       const hit = resolved[entry.hash]; // { url, width, height }
       let url = hit?.url;
-      if (!url && entry.kind === 'video') { missingVideos++; continue; }
       if (!url) { url = `https://i.pinimg.com/736x/${entry.hash}.${entry.ext}`; fallbacks++; }
       const ext = url.match(/\.(\w+)$/)[1];
       const n = (perPin.get(entry.pin) || 0) + 1;
@@ -485,12 +473,10 @@
         preview: entry.preview || url,
         width: hit?.width || 0,
         height: hit?.height || 0,
-        filename: `${base}.${ext}`,
-        ...(entry.kind === 'video' ? { type: 'video' } : {})
+        filename: `${base}.${ext}`
       });
     }
     if (fallbacks) notes.push(`有 ${fallbacks} 張找不到原圖，改用 736px。`);
-    if (missingVideos) notes.push(`有 ${missingVideos} 部影片找不到可下載的 MP4（只有串流版本）。`);
 
     const query = new URLSearchParams(location.search).get('q');
     const parts = location.pathname.split('/').filter(Boolean);
